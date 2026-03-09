@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+
+# ComfyUI (large, cloned on server)
+ComfyUI/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs
+output/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+
+# VastAI state
+.vast-instance.json
+
+# Telegram bot data
+*.session

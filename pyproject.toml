@@ -1,0 +1,21 @@
+[project]
+name = "comfyui-agent"
+version = "0.1.0"
+description = "Automated ComfyUI workflow pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "requests>=2.28",
+    "websocket-client>=1.5",
+]
+
+[project.scripts]
+comfy-pipeline = "comfy_pipeline.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

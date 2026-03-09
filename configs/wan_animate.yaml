@@ -1,0 +1,153 @@
+name: wan_animate
+description: "Wan 2.2 Animate - Character animation from reference image and video"
+workflow_file: workflows/Wan_Animate_workflow.json
+
+comfyui:
+  repo: https://github.com/comfyanonymous/ComfyUI.git
+  path: /workspace/ComfyUI
+  extra_pip:
+    - sageattention
+
+# Custom nodes required by this workflow
+custom_nodes:
+  - name: ComfyUI-Manager
+    url: https://github.com/ltdrdata/ComfyUI-Manager.git
+  - name: ComfyUI-WanVideoWrapper
+    url: https://github.com/kijai/ComfyUI-WanVideoWrapper.git
+  - name: ComfyUI-WanAnimatePreprocess
+    url: https://github.com/kijai/ComfyUI-WanAnimatePreprocess.git
+  - name: ComfyUI-KJNodes
+    url: https://github.com/kijai/ComfyUI-KJNodes.git
+  - name: comfyui_controlnet_aux
+    url: https://github.com/Fannovel16/comfyui_controlnet_aux.git
+  - name: ComfyUI-Frame-Interpolation
+    url: https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
+  - name: ComfyUI-segment-anything-2
+    url: https://github.com/kijai/ComfyUI-segment-anything-2.git
+  - name: ComfyUI-VideoHelperSuite
+    url: https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
+  - name: cg-use-everywhere
+    url: https://github.com/chrisgoringe/cg-use-everywhere.git
+  - name: ComfyLiterals
+    url: https://github.com/M1kep/ComfyLiterals.git
+  - name: was-node-suite-comfyui
+    url: https://github.com/WASasquatch/was-node-suite-comfyui.git
+  - name: ComfyUI_Comfyroll_CustomNodes
+    url: https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git
+  - name: ComfyUI_essentials
+    url: https://github.com/cubiq/ComfyUI_essentials.git
+  - name: rgthree-comfy
+    url: https://github.com/rgthree/rgthree-comfy.git
+  - name: ComfyUI-Easy-Use
+    url: https://github.com/yolain/ComfyUI-Easy-Use.git
+  - name: ComfyUI_LayerStyle_Advance
+    url: https://github.com/chflame163/ComfyUI_LayerStyle_Advance.git
+
+# Models to download into ComfyUI/models/
+models:
+  # Main diffusion model (~35GB)
+  - path: diffusion_models/wan2.2_animate_14B_bf16.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_animate_14B_bf16.safetensors
+    min_size: 10000000000
+  # T2V diffusion model (~29GB)
+  - path: diffusion_models/wan2.2_t2v_low_noise_14B_fp16.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp16.safetensors
+    min_size: 10000000000
+  # Text encoder (~6.7GB)
+  - path: text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    min_size: 1000000000
+  # VAE (~254MB)
+  - path: vae/wan_2.1_vae.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
+    min_size: 100000000
+  # CLIP Vision
+  - path: clip_vision/clip_vision_h.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors
+    min_size: 100000000
+  # I2V distillation LoRA
+  - path: loras/i2v_lightx2v_low_noise_model.safetensors
+    url: https://huggingface.co/lightx2v/Wan2.2-Lightning/resolve/main/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors
+    min_size: 100000000
+  # Relight LoRA
+  - path: loras/wan2.2_animate_14B_relight_lora_bf16.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_animate_14B_relight_lora_bf16.safetensors
+    min_size: 100000000
+  # T2V distillation LoRA (used when T2V upscale is enabled)
+  - path: loras/t2v_lightx2v_low_noise_model.safetensors
+    url: https://huggingface.co/lightx2v/Wan2.2-Lightning/resolve/main/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors
+    min_size: 100000000
+  # Upscale model
+  - path: upscale_models/1xSkinContrast-SuperUltraCompact.pth
+    url: https://drive.google.com/uc?id=1RbBx6v8G0t8WeW5NETK55uEThob46_R0
+    min_size: 10000
+  # Detection models
+  - path: detection/yolov10m.onnx
+    url: https://huggingface.co/Wan-AI/Wan2.2-Animate-14B/resolve/main/process_checkpoint/det/yolov10m.onnx
+    min_size: 1000000
+  - path: detection/vitpose_h_wholebody_data.bin
+    url: https://huggingface.co/Kijai/vitpose_comfy/resolve/main/onnx/vitpose_h_wholebody_data.bin
+    min_size: 1000000
+  - path: detection/vitpose_h_wholebody_model.onnx
+    url: https://huggingface.co/Kijai/vitpose_comfy/resolve/main/onnx/vitpose_h_wholebody_model.onnx
+    min_size: 1000000
+  - path: detection/vitpose-l-wholebody.onnx
+    url: https://huggingface.co/JunkyByte/easy_ViTPose/resolve/main/onnx/wholebody/vitpose-l-wholebody.onnx
+    min_size: 1000000
+  # Personal LoRAs
+  - path: loras/altf4_high_noise.safetensors
+    url: https://huggingface.co/RazinAleks/altf4girl-lora/resolve/main/altf4girl_high_noise/epoch-0.safetensors
+    min_size: 0
+  - path: loras/altf4_low_noise.safetensors
+    url: https://huggingface.co/RazinAleks/altf4girl-lora/resolve/main/altf4girl_low_noise/epoch-0.safetensors
+    min_size: 0
+  - path: loras/emi2soul_high_noise_epoch2.safetensors
+    url: https://huggingface.co/RazinAleks/emi2soul-lora/resolve/main/emi2soul_high_noise/epoch-2.safetensors
+    min_size: 0
+  - path: loras/emi2soul_low_noise_epoch2.safetensors
+    url: https://huggingface.co/RazinAleks/emi2soul-lora/resolve/main/emi2soul_low_noise/epoch-2.safetensors
+    min_size: 0
+
+# Input injection: which workflow nodes receive user-provided files
+inputs:
+  reference_image:
+    node_id: "311"    # LoadImage - "Upload a reference image"
+    param: image
+  reference_video:
+    node_id: "417"    # VHS_LoadVideo - "Upload a reference video"
+    param: video
+
+# Output nodes to download results from
+outputs:
+  - node_id: "504"    # VHS_VideoCombine - final upscaled video (32fps)
+    type: VHS_VideoCombine
+  - node_id: "467"    # VHS_VideoCombine - base video (16fps)
+    type: VHS_VideoCombine
+
+# Semantic parameter names for --set flag (agent-friendly)
+# Usage: comfy-pipeline run --set prompt="dancing in rain" --set lora_high=my.safetensors
+parameters:
+  prompt:
+    node_id: "227"
+    param: text
+  lora_high:
+    node_id: "463"
+    param: lora_name
+  lora_high_strength:
+    node_id: "463"
+    param: strength_model
+  lora_low:
+    node_id: "464"
+    param: lora_name
+  lora_low_strength:
+    node_id: "464"
+    param: strength_model
+
+# Override node parameters for ALL runs (uncomment and edit as needed)
+# overrides:
+#   "463":
+#     lora_name: "your_high_noise_lora.safetensors"
+#     strength_model: 0.7
+#   "464":
+#     lora_name: "your_low_noise_lora.safetensors"
+#     strength_model: 0.4
