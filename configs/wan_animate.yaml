@@ -90,7 +90,7 @@ models:
     min_size: 1000000
   - path: detection/vitpose_h_wholebody_model.onnx
     url: https://huggingface.co/Kijai/vitpose_comfy/resolve/main/onnx/vitpose_h_wholebody_model.onnx
-    min_size: 1000000
+    min_size: 400000  # split ONNX format — weights are in _data.bin
   - path: detection/vitpose-l-wholebody.onnx
     url: https://huggingface.co/JunkyByte/easy_ViTPose/resolve/main/onnx/wholebody/vitpose-l-wholebody.onnx
     min_size: 1000000
@@ -119,10 +119,15 @@ inputs:
 
 # Output nodes to download results from
 outputs:
-  - node_id: "504"    # VHS_VideoCombine - final upscaled video (32fps)
+  - node_id: "462"
     type: VHS_VideoCombine
-  - node_id: "467"    # VHS_VideoCombine - base video (16fps)
+    name: raw
+  - node_id: "467"
     type: VHS_VideoCombine
+    name: refined
+  - node_id: "504"
+    type: VHS_VideoCombine
+    name: upscaled
 
 # Semantic parameter names for --set flag (agent-friendly)
 # Usage: comfy-pipeline run --set prompt="dancing in rain" --set lora_high=my.safetensors
@@ -130,6 +135,7 @@ parameters:
   prompt:
     node_id: "227"
     param: text
+  # Personal LoRAs (high/low noise)
   lora_high:
     node_id: "463"
     param: lora_name
@@ -142,12 +148,21 @@ parameters:
   lora_low_strength:
     node_id: "464"
     param: strength_model
+  # Built-in LoRAs
+  i2v_distill_strength:
+    node_id: "314"
+    param: strength_model
+  relight_strength:
+    node_id: "315"
+    param: strength_model
 
-# Override node parameters for ALL runs (uncomment and edit as needed)
-# overrides:
-#   "463":
-#     lora_name: "your_high_noise_lora.safetensors"
-#     strength_model: 0.7
-#   "464":
-#     lora_name: "your_low_noise_lora.safetensors"
-#     strength_model: 0.4
+# Override node parameters for ALL runs
+overrides:
+  "314":
+    strength_model: 1.0        # i2v distillation LoRA
+  "315":
+    strength_model: 1.0        # relight LoRA
+  "463":
+    strength_model: 0.89       # personal LoRA (high noise)
+  "464":
+    strength_model: 0.89       # personal LoRA (low noise)

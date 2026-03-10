@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -13,17 +14,25 @@ PID_FILENAME = ".comfyui.pid"
 
 
 def install_comfyui(config: WorkflowConfig):
-    """Clone ComfyUI and install its Python requirements."""
+    """Clone ComfyUI and install its Python requirements.
+
+    Skips clone and requirements install if ComfyUI is already present
+    (e.g. when using a pre-built Docker image like vastai/comfy).
+    """
     comfy_path = Path(config.comfyui_path)
+    main_py = comfy_path / "main.py"
 
-    if not comfy_path.exists():
-        print(f"Cloning ComfyUI to {comfy_path}...")
-        _run(["git", "clone", config.comfyui_repo, str(comfy_path)])
+    if main_py.exists():
+        print(f"ComfyUI already installed at {comfy_path}, skipping clone & requirements.")
+    else:
+        if not comfy_path.exists():
+            print(f"Cloning ComfyUI to {comfy_path}...")
+            _run(["git", "clone", config.comfyui_repo, str(comfy_path)])
 
-    print("Installing ComfyUI requirements...")
-    _run(
-        [sys.executable, "-m", "pip", "install", "-r", str(comfy_path / "requirements.txt")]
-    )
+        print("Installing ComfyUI requirements...")
+        _run(
+            [sys.executable, "-m", "pip", "install", "-r", str(comfy_path / "requirements.txt")]
+        )
 
     for pkg in config.extra_pip:
         print(f"Installing {pkg}...")
@@ -64,7 +73,10 @@ def download_models(config: WorkflowConfig):
         model_path = models_dir / model.path
         model_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if model_path.exists():
+        if model_path.is_symlink() and not model_path.exists():
+            # Broken symlink — remove and re-download
+            model_path.unlink()
+        elif model_path.exists():
             size = model_path.stat().st_size
             if model.min_size and size < model.min_size:
                 print(f"  {model_path.name} too small ({size}B), re-downloading...")
@@ -118,12 +130,16 @@ def start_server(
         pid_path.unlink()
 
     comfy_path = Path(config.comfyui_path)
+    log_file = comfy_path / "comfyui.log"
     cmd = [sys.executable, "main.py", "--listen", listen, "--port", str(port)]
 
     print(f"Starting ComfyUI on {listen}:{port}...")
+    log_fh = open(log_file, "a")
     proc = subprocess.Popen(
         cmd,
         cwd=str(comfy_path),
+        stdout=log_fh,
+        stderr=log_fh,
         start_new_session=True,  # detach from parent so it survives CLI exit
     )
 
@@ -195,8 +211,33 @@ def _run(cmd: list[str], check: bool = True, **kwargs) -> subprocess.CompletedPr
     return subprocess.run(cmd, check=check, **kwargs)
 
 
+def _parse_hf_url(url: str) -> tuple[str, str] | None:
+    """Parse a HuggingFace URL into (repo_id, filepath) or None."""
+    m = re.match(r"https://huggingface\.co/([^/]+/[^/]+)/resolve/[^/]+/(.+)", url)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
 def _download_file(url: str, output_path: Path):
-    """Download a file, with Google Drive support via gdown."""
+    """Download a file using HF hub (preferred), gdown, or wget fallback."""
+    # HuggingFace URLs: use huggingface_hub for reliable, resumable downloads
+    hf = _parse_hf_url(url)
+    if hf:
+        repo_id, filename = hf
+        try:
+            from huggingface_hub import hf_hub_download
+
+            cached = hf_hub_download(repo_id=repo_id, filename=filename)
+            # Symlink from HF cache to target path (avoids copying huge files)
+            if output_path.exists() or output_path.is_symlink():
+                output_path.unlink()
+            output_path.symlink_to(cached)
+            return
+        except Exception as e:
+            print(f"  HF hub download failed ({e}), falling back to wget...")
+
+    # Google Drive
     if "drive.google.com" in url:
         _run(
             [sys.executable, "-m", "pip", "install", "-q", "gdown"],
@@ -206,7 +247,11 @@ def _download_file(url: str, output_path: Path):
         if result.returncode == 0:
             return
 
-    result = _run(["wget", "-c", url, "-O", str(output_path)], check=False)
+    # Fallback: wget with retry
+    result = _run(
+        ["wget", "-c", "--tries=5", "--timeout=60", url, "-O", str(output_path)],
+        check=False,
+    )
     if result.returncode != 0:
         print(f"  ERROR: Failed to download {output_path.name}")
         if output_path.exists() and output_path.stat().st_size == 0:

@@ -2734,45 +2734,6 @@
       "bgcolor": "#335"
     },
     {
-      "id": 512,
-      "type": "Fast Groups Bypasser (rgthree)",
-      "pos": [
-        1359.2635498046875,
-        1821.0277099609375
-      ],
-      "size": [
-        387.3904113769531,
-        60.1761360168457
-      ],
-      "flags": {},
-      "order": 25,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "OPT_CONNECTION",
-          "type": "*",
-          "links": null
-        }
-      ],
-      "properties": {
-        "matchColors": "purple",
-        "matchTitle": "",
-        "showNav": true,
-        "showAllGraphs": true,
-        "sort": "position",
-        "customSortAlphabet": "",
-        "toggleRestriction": "default",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.1",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "color": "#322",
-      "bgcolor": "#533"
-    },
-    {
       "id": 497,
       "type": "VAEEncode",
       "pos": [

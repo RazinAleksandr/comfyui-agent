@@ -1,0 +1,12 @@
+gpu: RTX 5090
+min_gpu_ram: 32000 # MB
+disk_space: 150 # GB
+max_price: 0.50 # $/hr
+image: vastai/comfy:v0.16.4-cuda-12.9-py312
+remote_path: /workspace/comfyui-agent
+label: comfyui-agent
+ssh_key: ~/.ssh/id_ed25519
+geolocation: "EU" # default – all of Europe
+extra_filters:
+  inet_down: { "gte": 5000 } # min 500 Mbps download
+  num_gpus: { "eq": 1 }

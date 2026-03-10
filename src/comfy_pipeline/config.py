@@ -29,6 +29,7 @@ class InputMapping:
 class OutputMapping:
     node_id: str
     type: str
+    name: str = ""
 
 
 @dataclass

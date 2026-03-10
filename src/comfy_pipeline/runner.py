@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from comfy_pipeline.client import ComfyUIClient
@@ -26,7 +27,8 @@ def prepare_workflow(config: WorkflowConfig, client: ComfyUIClient) -> dict:
     if is_api_format(raw):
         return raw
 
-    print("Converting workflow from UI to API format...")
+    import sys
+    print("Converting workflow from UI to API format...", file=sys.stderr)
     object_info = client.get_object_info()
     return convert_to_api_format(raw, object_info)
 
@@ -41,19 +43,20 @@ def run_single(
     cli_overrides: dict[str, dict] | None = None,
 ) -> list[Path]:
     """Run a single generation with the given input files."""
+    import sys
     label = pair_name or "single"
-    print(f"\n{'=' * 50}")
-    print(f"Running: {label}")
+    print(f"\n{'=' * 50}", file=sys.stderr)
+    print(f"Running: {label}", file=sys.stderr)
     for name, path in input_files.items():
-        print(f"  {name}: {path}")
-    print(f"{'=' * 50}")
+        print(f"  {name}: {path}", file=sys.stderr)
+    print(f"{'=' * 50}", file=sys.stderr)
 
     # Upload files and build injections
     injections = []
     for input_name, file_path in input_files.items():
         if input_name not in config.inputs:
             continue
-        print(f"Uploading {input_name}...")
+        print(f"Uploading {input_name}...", file=sys.stderr)
         uploaded_name = client.upload_file(file_path)
         mapping = config.inputs[input_name]
         injections.append((mapping.node_id, mapping.param, uploaded_name))
@@ -67,33 +70,43 @@ def run_single(
         workflow = apply_overrides(workflow, cli_overrides)
 
     # Queue and wait
-    print("Queuing prompt...")
+    print("Queuing prompt...", file=sys.stderr)
     prompt_id = client.queue_prompt(workflow)
-    print(f"Prompt ID: {prompt_id}")
+    print(f"Prompt ID: {prompt_id}", file=sys.stderr)
 
-    print("Waiting for completion...")
+    print("Waiting for completion...", file=sys.stderr)
     history = client.wait_for_completion(prompt_id)
 
-    # Download outputs
-    pair_output_dir = output_dir / label
+    # Download outputs into: output_dir / <timestamp>_<label> / <node_name> /
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_dir / f"{timestamp}_{label}"
     outputs = history.get(prompt_id, {}).get("outputs", {})
 
     downloaded = []
     for out_cfg in config.outputs:
         node_outputs = outputs.get(out_cfg.node_id, {})
+        if not node_outputs:
+            print(f"  No output from node {out_cfg.node_id} "
+                  f"(available: {list(outputs.keys())})", file=sys.stderr)
+            continue
+        # Per-node subfolder: use config name or fallback to node_id
+        node_name = out_cfg.name or f"node_{out_cfg.node_id}"
+        node_dir = run_dir / node_name
         # VHS uses "gifs" key for video output (legacy naming)
         for key in ("gifs", "images", "videos", "files"):
             for item in node_outputs.get(key, []):
                 path = client.download_output(
                     item["filename"],
                     item.get("subfolder", ""),
-                    pair_output_dir,
+                    node_dir,
                 )
                 downloaded.append(path)
-                print(f"  Saved: {path}")
+                print(f"  Saved: {path}", file=sys.stderr)
 
     if not downloaded:
-        print("  Warning: no output files found")
+        print("  Warning: no output files found", file=sys.stderr)
+        for nid, ndata in outputs.items():
+            print(f"  Node {nid} keys: {list(ndata.keys())}", file=sys.stderr)
 
     return downloaded
 

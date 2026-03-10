@@ -29,6 +29,7 @@ output/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 *.pem
 
 # VastAI state

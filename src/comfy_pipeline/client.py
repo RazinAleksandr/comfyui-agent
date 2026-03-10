@@ -53,7 +53,14 @@ class ComfyUIClient:
             "client_id": self.client_id,
         }
         r = requests.post(f"{self.base_url}/prompt", json=payload)
-        r.raise_for_status()
+        if r.status_code != 200:
+            try:
+                detail = json.dumps(r.json(), indent=2)
+            except Exception:
+                detail = r.text[:2000]
+            raise RuntimeError(
+                f"ComfyUI rejected prompt (HTTP {r.status_code}):\n{detail}"
+            )
         result = r.json()
         if "error" in result:
             node_errors = result.get("node_errors", "")
@@ -92,7 +99,7 @@ class ComfyUIClient:
                     node = exec_data.get("node")
                     if node is None:
                         break  # execution complete
-                    print(f"  Executing node {node}...")
+                    print(f"  Executing node {node}...", file=__import__('sys').stderr)
 
                 elif msg_type == "execution_error":
                     raise RuntimeError(f"Execution error: {data['data']}")
