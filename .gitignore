@@ -12,7 +12,6 @@ venv/
 
 # ComfyUI (large, cloned on server)
 ComfyUI/
-# AI_Influencer_studio: parser
 AI_Influencer_studio/
 
 # IDE

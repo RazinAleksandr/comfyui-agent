@@ -233,6 +233,7 @@ def rsync_push(
         ".vast-instance.json",
         "output",
         ".claude",
+        "AI_Influencer_studio",
     ]
     for pattern in excludes:
         cmd.extend(["--exclude", pattern])

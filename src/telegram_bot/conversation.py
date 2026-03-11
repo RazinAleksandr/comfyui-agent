@@ -18,6 +18,8 @@ from telegram.ext import (
 )
 
 from telegram_bot.config import BotConfig
+from telegram_bot.parse_session import ParseSession, QueuedGeneration
+from telegram_bot.studio_client import StudioClient
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Conversation states
 # ---------------------------------------------------------------------------
 
-WAITING_IMAGE, WAITING_VIDEO, WAITING_PROMPT, WAITING_FEEDBACK = range(4)
+(
+    WAITING_IMAGE, WAITING_VIDEO, WAITING_PROMPT, WAITING_FEEDBACK,
+    PARSE_WAITING_IMAGE, PARSE_REVIEWING, PARSE_GENERATING,
+    RESUME_CHOOSING,
+) = range(8)
 
 # user_data keys
 KEY_IMAGE = "image_path"
@@ -35,6 +41,8 @@ KEY_VIDEO = "video_path"
 KEY_PROMPT = "prompt"
 KEY_WORKFLOW = "workflow"
 KEY_TMPDIR = "tmpdir"
+KEY_PARSE_SESSION = "parse_session"
+KEY_STUDIO_CLIENT = "studio_client"
 
 # Job name for idle-timeout scheduler
 IDLE_JOB_NAME = "idle_shutdown"
@@ -505,11 +513,468 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         return WAITING_FEEDBACK
 
     # -----------------------------------------------------------------------
+    # /parse flow handlers
+    # -----------------------------------------------------------------------
+
+    async def parse_command(update: Update, context: CallbackContext) -> int:
+        """Handle /parse [hashtags]. Ingest trends and start review flow."""
+        if not _is_allowed(update, config):
+            await update.message.reply_text("You are not authorized to use this bot.")
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+
+        # Parse optional hashtags from command arguments
+        hashtags: list[str] = []
+        if context.args:
+            hashtags = [
+                tag.lstrip("#") for tag in context.args if tag.strip()
+            ]
+
+        status_msg = await update.message.reply_text(
+            "Parsing trending videos... This may take a minute."
+        )
+
+        client = StudioClient(config.studio_base_url)
+        context.user_data[KEY_STUDIO_CLIENT] = client
+        context.user_data[KEY_WORKFLOW] = config.default_workflow
+
+        try:
+            result = await client.run_pipeline(
+                influencer_id=config.studio_influencer_id,
+                platforms=["tiktok"],
+                hashtags=hashtags or None,
+                limit=20,
+            )
+        except Exception as exc:
+            await status_msg.edit_text(f"Pipeline failed: {exc}")
+            return ConversationHandler.END
+
+        # Extract selected videos from pipeline result
+        platforms_out = result.get("platforms", [])
+        if not platforms_out:
+            await status_msg.edit_text("Pipeline returned no platform results.")
+            return ConversationHandler.END
+
+        selected_dir = platforms_out[0].get("selected_dir", "")
+        if not selected_dir:
+            await status_msg.edit_text("Pipeline returned no selected_dir.")
+            return ConversationHandler.END
+
+        video_dir = Path(selected_dir)
+        if not video_dir.exists():
+            await status_msg.edit_text(
+                "VLM stage selected 0 videos (directory does not exist)."
+            )
+            return ConversationHandler.END
+
+        video_files = sorted(video_dir.glob("*.mp4"))
+        if not video_files:
+            await status_msg.edit_text(
+                f"No .mp4 files in {video_dir}"
+            )
+            return ConversationHandler.END
+
+        items = []
+        _views_re = re.compile(r"views(\d+)")
+        for f in video_files:
+            m = _views_re.search(f.stem)
+            views = f"{int(m.group(1)):,}" if m else "?"
+            items.append({
+                "_local_path": str(f),
+                "caption": f.stem,
+                "views": views,
+            })
+
+        run_id = platforms_out[0].get("trend_run_id", 0)
+        session = ParseSession(
+            run_id=run_id,
+            items=items,
+            influencer_id=config.studio_influencer_id,
+            selected_dir=str(video_dir),
+            workflow=config.default_workflow,
+        )
+        context.user_data[KEY_PARSE_SESSION] = session
+
+        await status_msg.edit_text(
+            f"Found {len(items)} filtered videos.\n"
+            "Send a reference photo to use for all generations."
+        )
+        return PARSE_WAITING_IMAGE
+
+    async def _show_current_item(
+        update: Update, context: CallbackContext,
+    ) -> int:
+        """Send the current trend item video and stats to the user."""
+        session: ParseSession | None = context.user_data.get(KEY_PARSE_SESSION)
+        if session is None:
+            await update.effective_chat.send_message(
+                "Session expired. Use /parse to start again."
+            )
+            return ConversationHandler.END
+
+        item = session.current_item
+
+        if item is None:
+            return await _finish_review(update, context)
+
+        idx = session.current_index + 1
+        total = len(session.items)
+        caption = item.get("caption", "")
+        views = item.get("views", "?")
+        local_path = item.get("_local_path", "")
+
+        text = (
+            f"[{idx}/{total}] {caption}\n"
+            f"Views: {views}\n\n"
+            "Send a prompt to approve, "
+            "/skip to skip, /done to finish review."
+        )
+
+        # Send the downloaded video file
+        video_file = Path(local_path)
+        chat = update.effective_chat
+        if video_file.exists():
+            try:
+                await chat.send_video(video=str(video_file))
+            except Exception:
+                logger.warning("Could not send video %s, sending as document", video_file)
+                try:
+                    await chat.send_document(document=str(video_file))
+                except Exception:
+                    logger.error("Failed to send file %s", video_file)
+        else:
+            logger.warning("Video file not found: %s", local_path)
+
+        await chat.send_message(text)
+        return PARSE_REVIEWING
+
+    async def parse_receive_image(
+        update: Update, context: CallbackContext,
+    ) -> int:
+        """User sends a photo in PARSE_WAITING_IMAGE. Save as shared reference."""
+        if not _is_allowed(update, config):
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+
+        if not update.message.photo:
+            await update.message.reply_text("Please send a photo.")
+            return PARSE_WAITING_IMAGE
+
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+        tmpdir = _get_tmpdir(context)
+        image_path = tmpdir / f"parse_ref_{photo.file_unique_id}.jpg"
+        await file.download_to_drive(str(image_path))
+
+        context.user_data[KEY_IMAGE] = str(image_path)
+        logger.info("Saved shared reference image: %s", image_path)
+
+        # Initialize session directory for persistence
+        session: ParseSession | None = context.user_data.get(KEY_PARSE_SESSION)
+        if session is not None:
+            session.init_session_dir(
+                PROJECT_ROOT / "output", str(image_path),
+            )
+
+        await update.message.reply_text("Got it. Showing first video...")
+        return await _show_current_item(update, context)
+
+    async def parse_approve(
+        update: Update, context: CallbackContext,
+    ) -> int:
+        """User sends text in PARSE_REVIEWING. Text is the prompt — queue and advance."""
+        if not _is_allowed(update, config):
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+
+        prompt = update.message.text.strip() if update.message.text else ""
+        if not prompt:
+            await update.message.reply_text("Please send a text prompt to approve.")
+            return PARSE_REVIEWING
+
+        session: ParseSession | None = context.user_data.get(KEY_PARSE_SESSION)
+        if session is None:
+            await update.message.reply_text("Session expired. Use /parse to start again.")
+            return ConversationHandler.END
+
+        item = session.current_item
+        if item is None:
+            return await _finish_review(update, context)
+
+        queued = QueuedGeneration(
+            trend_item_id=item.get("id", 0),
+            caption=item.get("caption", ""),
+            video_path=item.get("_local_path", ""),
+            image_path=context.user_data.get(KEY_IMAGE, ""),
+            prompt=prompt,
+        )
+        session.queue.append(queued)
+        session.save()
+
+        n = len(session.queue)
+        session.advance()
+        remaining = len(session.items) - session.current_index
+
+        if session.current_item is None:
+            await update.message.reply_text(
+                f"Queued! ({n} in queue). No more videos to review."
+            )
+            return await _finish_review(update, context)
+
+        await update.message.reply_text(
+            f"Queued! ({n} in queue, {remaining} left). Next video:"
+        )
+        return await _show_current_item(update, context)
+
+    async def parse_skip(update: Update, context: CallbackContext) -> int:
+        """Handle /skip in PARSE_REVIEWING. Advance to next item."""
+        if not _is_allowed(update, config):
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+
+        session: ParseSession | None = context.user_data.get(KEY_PARSE_SESSION)
+        if session is None:
+            await update.message.reply_text("Session expired. Use /parse to start again.")
+            return ConversationHandler.END
+
+        session.advance()
+
+        if session.current_item is None:
+            await update.message.reply_text("No more videos to review.")
+            return await _finish_review(update, context)
+
+        return await _show_current_item(update, context)
+
+    async def parse_done(update: Update, context: CallbackContext) -> int:
+        """Handle /done in PARSE_REVIEWING. Finish review, start batch."""
+        if not _is_allowed(update, config):
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+        return await _finish_review(update, context)
+
+    async def _finish_review(
+        update: Update, context: CallbackContext,
+    ) -> int:
+        """End the review phase and start batch generation if queue is non-empty."""
+        session: ParseSession | None = context.user_data.get(KEY_PARSE_SESSION)
+        chat = update.effective_chat
+
+        if session is None or not session.queue:
+            await chat.send_message(
+                "No videos were approved. Use /start for manual mode "
+                "or /parse to try again."
+            )
+            return ConversationHandler.END
+
+        return await _run_batch_generation(update, context)
+
+    async def _run_batch_generation(
+        update: Update, context: CallbackContext,
+    ) -> int:
+        """Rent GPU once, then generate all queued videos sequentially."""
+        session: ParseSession = context.user_data[KEY_PARSE_SESSION]
+        queue = session.queue
+        total = len(queue)
+        workflow = context.user_data.get(KEY_WORKFLOW, config.default_workflow)
+        chat = update.effective_chat
+
+        # Count only items that still need generating
+        actionable = [q for q in queue if q.status != "completed"]
+        if not actionable:
+            await chat.send_message("All items already completed. Nothing to generate.")
+            return WAITING_FEEDBACK
+
+        progress_msg = await chat.send_message(
+            f"Starting batch generation ({len(actionable)}/{total} videos). Renting GPU..."
+        )
+
+        # Bring up the server once for the entire batch
+        try:
+            server_status = await _ensure_server_up(workflow)
+            await progress_msg.edit_text(
+                f"{server_status}\nGenerating {len(actionable)} videos..."
+            )
+        except RuntimeError as e:
+            await progress_msg.edit_text(
+                f"Failed to start server: {str(e)[:4000]}\n"
+                "Use /parse to try again or /resume to retry later."
+            )
+            return ConversationHandler.END
+
+        successes = 0
+
+        for i, item in enumerate(queue, start=1):
+            if item.status in ("completed",):
+                continue
+
+            snippet = (item.caption[:40] + "...") if len(item.caption) > 40 else item.caption
+            try:
+                await progress_msg.edit_text(
+                    f"Generating {i}/{total}: {snippet}"
+                )
+            except Exception:
+                pass
+
+            # Per-item output directory inside session_dir
+            if session.session_dir is not None:
+                caption_slug = re.sub(r"[^a-zA-Z0-9_]", "_", item.caption)[:60]
+                item_output_dir = str(
+                    session.session_dir / "results" / f"{i:03d}_{caption_slug}"
+                )
+                Path(item_output_dir).mkdir(parents=True, exist_ok=True)
+            else:
+                item_output_dir = str(PROJECT_ROOT / "output")
+
+            item.status = "generating"
+            session.save()
+
+            try:
+                outputs = await _run_generation(
+                    workflow=workflow,
+                    image_path=item.image_path,
+                    video_path=item.video_path,
+                    prompt=item.prompt,
+                    output_dir=item_output_dir,
+                )
+            except RuntimeError as e:
+                item.status = "failed"
+                session.save()
+                await chat.send_message(
+                    f"Generation {i}/{total} failed: {str(e)[:2000]}"
+                )
+                continue
+
+            item.status = "completed"
+            item.output_paths = outputs
+            session.save()
+
+            # Send results
+            sent = False
+            for output_path in outputs:
+                path = Path(output_path)
+                if path.exists() and path.suffix.lower() in (".mp4", ".webm", ".mov"):
+                    await chat.send_video(
+                        video=str(path),
+                        caption=f"[{i}/{total}] {snippet}",
+                    )
+                    sent = True
+                elif path.exists():
+                    await chat.send_document(
+                        document=str(path),
+                        caption=f"[{i}/{total}] {snippet}",
+                    )
+                    sent = True
+            if sent:
+                successes += 1
+
+        completed_total = sum(1 for q in queue if q.status == "completed")
+        await progress_msg.edit_text(
+            f"Batch complete! {completed_total}/{total} videos generated.\n"
+            "Send feedback to adjust, or /stop to shut down."
+        )
+        return WAITING_FEEDBACK
+
+    # -----------------------------------------------------------------------
+    # /resume flow
+    # -----------------------------------------------------------------------
+
+    async def resume_command(update: Update, context: CallbackContext) -> int:
+        """Handle /resume — find incomplete sessions and resume generation."""
+        if not _is_allowed(update, config):
+            await update.message.reply_text("You are not authorized to use this bot.")
+            return ConversationHandler.END
+
+        _reset_idle_timer(context, config)
+
+        base_output = PROJECT_ROOT / "output"
+        incomplete = ParseSession.find_incomplete_sessions(base_output)
+
+        if not incomplete:
+            await update.message.reply_text("Nothing to resume. All sessions are complete.")
+            return ConversationHandler.END
+
+        if len(incomplete) == 1:
+            session = ParseSession.load(incomplete[0])
+            context.user_data[KEY_PARSE_SESSION] = session
+            context.user_data[KEY_WORKFLOW] = session.workflow
+            # Restore reference image from session dir
+            ref_img = incomplete[0] / "reference_image.jpg"
+            if ref_img.exists():
+                context.user_data[KEY_IMAGE] = str(ref_img)
+
+            remaining = session.pending_or_failed_count()
+            total = len(session.queue)
+            await update.message.reply_text(
+                f"Resuming session ({remaining}/{total} remaining)..."
+            )
+            return await _run_batch_generation(update, context)
+
+        # Multiple incomplete sessions — let the user choose
+        lines = ["Incomplete sessions:"]
+        for idx, sd in enumerate(incomplete, start=1):
+            try:
+                s = ParseSession.load(sd)
+                remaining = s.pending_or_failed_count()
+                total = len(s.queue)
+                lines.append(f"{idx}. {sd.name} — {remaining}/{total} pending")
+            except (json.JSONDecodeError, OSError):
+                lines.append(f"{idx}. {sd.name} — (corrupt)")
+        lines.append("\nReply with number to resume.")
+
+        context.user_data["_resume_choices"] = incomplete
+        await update.message.reply_text("\n".join(lines))
+        return RESUME_CHOOSING
+
+    async def resume_choose(update: Update, context: CallbackContext) -> int:
+        """Handle the user's numeric choice in RESUME_CHOOSING."""
+        if not _is_allowed(update, config):
+            return ConversationHandler.END
+
+        text = (update.message.text or "").strip()
+        choices: list[Path] = context.user_data.get("_resume_choices", [])
+
+        try:
+            idx = int(text) - 1
+            if not (0 <= idx < len(choices)):
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                f"Please reply with a number between 1 and {len(choices)}."
+            )
+            return RESUME_CHOOSING
+
+        session_dir = choices[idx]
+        session = ParseSession.load(session_dir)
+        context.user_data[KEY_PARSE_SESSION] = session
+        context.user_data[KEY_WORKFLOW] = session.workflow
+        ref_img = session_dir / "reference_image.jpg"
+        if ref_img.exists():
+            context.user_data[KEY_IMAGE] = str(ref_img)
+
+        context.user_data.pop("_resume_choices", None)
+
+        remaining = session.pending_or_failed_count()
+        total = len(session.queue)
+        await update.message.reply_text(
+            f"Resuming session {session_dir.name} ({remaining}/{total} remaining)..."
+        )
+        return await _run_batch_generation(update, context)
+
+    # -----------------------------------------------------------------------
     # Build the ConversationHandler
     # -----------------------------------------------------------------------
 
     handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("parse", parse_command),
+            CommandHandler("resume", resume_command),
+        ],
         states={
             WAITING_IMAGE: [
                 MessageHandler(filters.PHOTO, receive_image),
@@ -526,6 +991,21 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                     | (filters.TEXT & ~filters.COMMAND),
                     handle_feedback,
                 ),
+                CommandHandler("stop", stop),
+            ],
+            PARSE_WAITING_IMAGE: [
+                MessageHandler(filters.PHOTO, parse_receive_image),
+                CommandHandler("stop", stop),
+            ],
+            PARSE_REVIEWING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, parse_approve),
+                CommandHandler("skip", parse_skip),
+                CommandHandler("done", parse_done),
+                CommandHandler("stop", stop),
+            ],
+            PARSE_GENERATING: [],
+            RESUME_CHOOSING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, resume_choose),
                 CommandHandler("stop", stop),
             ],
         },

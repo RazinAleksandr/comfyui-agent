@@ -2,3 +2,5 @@ token: ${TELEGRAM_BOT_TOKEN}
 allowed_users: [741766842, 418854901]
 default_workflow: wan_animate
 idle_timeout_minutes: 30
+studio_base_url: "http://localhost:8000"
+studio_influencer_id: "altf4girl"

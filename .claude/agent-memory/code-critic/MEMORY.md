@@ -28,6 +28,20 @@
 - `gpu_ram` filter is in MB (48000 = 48GB)
 - `disk_space` filter is in GB
 
+## Studio API Pipeline Contract (verified from backend source)
+- Endpoint: `POST /api/v1/pipeline/run`
+- Request `PipelineRunRequest`:
+  - `influencer_id: str` (required)
+  - `platforms: dict[str, PlatformPipelineConfigIn]` — a DICT (platform name -> config object), NOT a list
+    - Each value requires `source: str` matching `^(seed|apify|tiktok_custom|instagram_custom)$`
+    - `limit`, `enabled`, `selector` are optional with defaults
+  - All other stage fields optional with defaults
+- Response `PipelineRunOut`:
+  - `influencer_id`, `started_at`, `base_dir`, `platforms: list[...]`, `generated_images: list[...]`
+  - NO top-level `id` field
+- `PipelinePlatformRunOut.selected_dir`: only non-None when `vlm.enabled=True` (default True)
+- `AI_Influencer_studio/backend/app/api/pipeline.py` is the authoritative contract source
+
 ## Key Architecture Facts (verified across all modules)
 - `vast_agent/cli.py` NOW uses `shlex.quote` throughout for all shell arguments in remote commands
   - `_parse_sets` returns list elements individually; they are quoted one-by-one in the run command loop
