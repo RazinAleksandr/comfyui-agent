@@ -79,7 +79,7 @@ models:
     min_size: 100000000
   # Upscale model
   - path: upscale_models/1xSkinContrast-SuperUltraCompact.pth
-    url: https://drive.google.com/uc?id=1RbBx6v8G0t8WeW5NETK55uEThob46_R0
+    url: https://huggingface.co/RazinAleks/1xSkinContrast-SuperUltraCompact/resolve/main/1xSkinContrast-SuperUltraCompact.pth
     min_size: 10000
   # Detection models
   - path: detection/yolov10m.onnx

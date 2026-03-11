@@ -29,10 +29,18 @@
 - `disk_space` filter is in GB
 
 ## Key Architecture Facts (verified across all modules)
-- `vast_agent/cli.py` builds remote shell command strings via f-string interpolation with NO shlex.quote usage
-  - Spaces in filenames or --set values (e.g. prompts) break the remote comfy-pipeline command
-  - This fires in the bot flow since prompts always contain spaces
+- `vast_agent/cli.py` NOW uses `shlex.quote` throughout for all shell arguments in remote commands
+  - `_parse_sets` returns list elements individually; they are quoted one-by-one in the run command loop
+  - This is correct: `'--set'` and `'prompt=foo bar'` both survive bash quote-stripping
+- `run_remote_stream` in `remote.py`: `stderr=None` means inherited from parent process (pass-through), not suppressed
+  - When vast-agent is itself piped (e.g. from asyncio subprocess in bot), comfy-pipeline stderr flows back correctly
 - `telegram_bot/conversation.py` uses `vast-agent status rc==0` as proxy for "ComfyUI server ready"
-  - rc=0 means "state file exists + API responded", NOT "ComfyUI server process is running"
-- `docs/pipeline.md` line 87 shows `--host 0.0.0.0` which is a bind address, not a connect address
+  - rc=0 means "state file exists + SSH reachable + instance running", NOT "ComfyUI server process is running"
+- `_ensure_server_up` in conversation.py does NOT accept or forward a progress_callback
+  - This means during `vast-agent up` (potentially 10+ minutes) the bot shows no progress to the user
+  - `_progress_cb` is only active during `_run_generation`, not during server startup
+- `client.py` `wait_for_completion` prints `"  Executing node {node}..."` to stderr
+  - The regex `r"Executing node (\w+)"` in conversation.py correctly matches this (node IDs are alphanumeric)
+- `comfy_pipeline/cli.py` `run --json-output` prints JSON to stdout, all progress to stderr
+  - JSON is captured by `run_remote_stream` → vast-agent stdout → bot's stdout_lines → parsed in `_run_generation`
 - All three modules have correct `__init__.py` and `__main__.py` following the reference pattern

@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import tempfile
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from telegram import Update
 from telegram.ext import (
@@ -51,11 +54,17 @@ def _is_allowed(update: Update, config: BotConfig) -> bool:
     return user.id in config.allowed_users
 
 
-async def _run_subprocess(*args: str, stream: bool = False) -> tuple[int, str, str]:
+async def _run_subprocess(
+    *args: str,
+    stream: bool = False,
+    progress_callback: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[int, str, str]:
     """Run a command via asyncio subprocess and return (returncode, stdout, stderr).
 
     When *stream* is True, stdout/stderr lines are logged in real time so the
     operator can follow progress (e.g. vast-agent rent attempts, SSH polling).
+    If *progress_callback* is provided (stream mode only), it is called with
+    each stderr line so the caller can relay progress to the user.
     """
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -73,16 +82,18 @@ async def _run_subprocess(*args: str, stream: bool = False) -> tuple[int, str, s
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
-    async def _read_stream(s, buf: list[str], level: int) -> None:
+    async def _read_stream(s, buf: list[str], level: int, cb=None) -> None:
         async for raw in s:
             line = raw.decode().rstrip()
             if line:
                 buf.append(line)
                 logger.log(level, "[vast-agent] %s", line)
+                if cb is not None:
+                    await cb(line)
 
     await asyncio.gather(
         _read_stream(proc.stdout, stdout_lines, logging.INFO),
-        _read_stream(proc.stderr, stderr_lines, logging.WARNING),
+        _read_stream(proc.stderr, stderr_lines, logging.WARNING, cb=progress_callback),
     )
     await proc.wait()
     return proc.returncode, "\n".join(stdout_lines), "\n".join(stderr_lines)
@@ -132,7 +143,10 @@ async def _idle_shutdown_callback(context: CallbackContext) -> None:
 # vast-agent subprocess wrappers
 # ---------------------------------------------------------------------------
 
-async def _ensure_server_up(workflow: str) -> str:
+async def _ensure_server_up(
+    workflow: str,
+    progress_callback: Callable[[str], Awaitable[None]] | None = None,
+) -> str:
     """Make sure the GPU server is running. Returns a status message."""
     # Check current status
     rc, _, _ = await _run_subprocess("vast-agent", "status")
@@ -142,7 +156,10 @@ async def _ensure_server_up(workflow: str) -> str:
 
     # Not running — bring it up
     logger.info("Server not running, starting with workflow %s", workflow)
-    rc, stdout, stderr = await _run_subprocess("vast-agent", "up", "-w", workflow, stream=True)
+    rc, stdout, stderr = await _run_subprocess(
+        "vast-agent", "up", "-w", workflow,
+        stream=True, progress_callback=progress_callback,
+    )
     if rc != 0:
         msg = stderr.strip() or stdout.strip() or "Unknown error"
         raise RuntimeError(f"vast-agent up failed: {msg}")
@@ -155,6 +172,7 @@ async def _run_generation(
     video_path: str,
     prompt: str,
     output_dir: str = "output",
+    progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[str]:
     """Run a generation via vast-agent and return list of local output paths."""
     cmd: list[str] = [
@@ -168,7 +186,7 @@ async def _run_generation(
     ]
 
     logger.info("Running generation: %s", " ".join(cmd))
-    rc, stdout, stderr = await _run_subprocess(*cmd, stream=True)
+    rc, stdout, stderr = await _run_subprocess(*cmd, stream=True, progress_callback=progress_callback)
 
     if rc != 0:
         msg = stderr.strip() or stdout.strip() or "Unknown error"
@@ -395,8 +413,54 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         # Progress messages
         progress_msg = await update.message.reply_text("Renting GPU...")
 
+        # Build a throttled progress callback that edits progress_msg
+        _PROGRESS_PATTERNS = [
+            (re.compile(r"Uploading input files"), "Uploading input files..."),
+            (re.compile(r"Uploading (\w+)"), "Uploading {1}..."),
+            (re.compile(r"Running workflow on remote"), "Running workflow..."),
+            (re.compile(r"Queuing prompt"), "Queuing prompt..."),
+            (re.compile(r"Waiting for completion"), "Executing workflow..."),
+            (re.compile(r"Executing node \w+ \((\w+)\)"), None),  # handled specially
+            (re.compile(r"Saved:"), "Saving output..."),
+            (re.compile(r"Downloading results"), "Downloading results..."),
+        ]
+        _last_edit_time = 0.0
+        _node_count = 0
+        _THROTTLE_SECONDS = 3.0
+
+        async def _progress_cb(line: str) -> None:
+            nonlocal _last_edit_time, _node_count
+
+            text = None
+            for pattern, template in _PROGRESS_PATTERNS:
+                m = pattern.search(line)
+                if m:
+                    if template is None:
+                        # Executing node — count steps and show node type
+                        _node_count += 1
+                        node_type = m.group(1) if m.lastindex else "?"
+                        text = f"Step {_node_count}: {node_type}"
+                    elif "{1}" in template:
+                        text = template.replace("{1}", m.group(1))
+                    else:
+                        text = template
+                    break
+
+            if text is None:
+                return
+
+            now = time.monotonic()
+            if now - _last_edit_time < _THROTTLE_SECONDS:
+                return
+
+            try:
+                await progress_msg.edit_text(text)
+                _last_edit_time = now
+            except Exception:
+                logger.debug("Failed to edit progress message", exc_info=True)
+
         try:
-            server_status = await _ensure_server_up(workflow)
+            server_status = await _ensure_server_up(workflow, progress_callback=_progress_cb)
             await progress_msg.edit_text(f"{server_status}\nRunning generation...")
         except RuntimeError as e:
             msg = str(e)[:4000]
@@ -411,6 +475,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                 video_path=video_path,
                 prompt=prompt,
                 output_dir=output_dir,
+                progress_callback=_progress_cb,
             )
         except RuntimeError as e:
             msg = str(e)[:4000]

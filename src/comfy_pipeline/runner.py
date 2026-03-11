@@ -74,8 +74,11 @@ def run_single(
     prompt_id = client.queue_prompt(workflow)
     print(f"Prompt ID: {prompt_id}", file=sys.stderr)
 
+    node_names = {
+        nid: node.get("class_type", "") for nid, node in workflow.items()
+    }
     print("Waiting for completion...", file=sys.stderr)
-    history = client.wait_for_completion(prompt_id)
+    history = client.wait_for_completion(prompt_id, node_names=node_names)
 
     # Download outputs into: output_dir / <timestamp>_<label> / <node_name> /
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

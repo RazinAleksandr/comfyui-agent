@@ -13,10 +13,13 @@ from vast_agent.config import VastConfig
 from vast_agent.remote import (
     RemoteError,
     check_ssh,
+    get_remote_file,
+    poll_remote_done,
     rsync_pull,
     rsync_push,
     rsync_push_files,
     run_remote,
+    run_remote_detached,
     run_ssh_interactive,
 )
 from vast_agent.vastai import Instance, VastAPIError, VastClient
@@ -168,13 +171,18 @@ def _rent_with_retry(
             f"Attempt {i + 1}/{attempts}: renting {gpu} @ ${price}/hr (offer {offer_id})"
         )
 
-        instance_id = client.create_instance(
-            offer_id=offer_id,
-            image=config.image,
-            disk=config.disk_space,
-            label=config.label,
-            onstart=config.onstart,
-        )
+        try:
+            instance_id = client.create_instance(
+                offer_id=offer_id,
+                image=config.image,
+                disk=config.disk_space,
+                label=config.label,
+                onstart=config.onstart,
+            )
+        except VastAPIError as e:
+            print(f"Offer {offer_id} unavailable: {e}. Trying next...")
+            continue
+
         print(f"Instance created: {instance_id}")
 
         try:
@@ -192,7 +200,7 @@ def _rent_with_retry(
             client.destroy_instance(instance_id)
 
     raise VastAPIError(
-        f"All {attempts} rent attempts failed (instances did not become ready within {INSTANCE_LOAD_TIMEOUT}s)"
+        f"All {attempts} rent attempts failed"
     )
 
 
@@ -429,7 +437,44 @@ def run(
 
     # Run remotely
     print("Running workflow on remote server...", file=sys.stderr)
-    result = run_remote(host, port, remote_cmd, ssh_key=key, capture=json_output)
+    if json_output:
+        # Detached execution to survive SSH proxy drops on vast.ai.
+        # Start the command via nohup, then poll for completion with
+        # short-lived SSH calls so no single connection lives > a few seconds.
+        run_remote_detached(
+            host, port, f"PYTHONUNBUFFERED=1 {remote_cmd}", ssh_key=key
+        )
+        stderr_offset = 0
+        poll_interval = 5
+        exit_code: int | None = None
+
+        while exit_code is None:
+            time.sleep(poll_interval)
+            # Stream new stderr lines (progress) to local stderr
+            stderr_all = get_remote_file(host, port, "/tmp/comfy_stderr.log", ssh_key=key)
+            if len(stderr_all) > stderr_offset:
+                new_data = stderr_all[stderr_offset:]
+                print(new_data, end="", file=sys.stderr, flush=True)
+                stderr_offset = len(stderr_all)
+            exit_code = poll_remote_done(host, port, ssh_key=key)
+
+        # Flush any remaining stderr
+        stderr_all = get_remote_file(host, port, "/tmp/comfy_stderr.log", ssh_key=key)
+        if len(stderr_all) > stderr_offset:
+            print(stderr_all[stderr_offset:], end="", file=sys.stderr, flush=True)
+
+        stdout = get_remote_file(host, port, "/tmp/comfy_stdout.txt", ssh_key=key)
+
+        if exit_code != 0:
+            raise RemoteError(
+                f"Remote command failed (exit {exit_code}): {remote_cmd}"
+            )
+
+        result = subprocess.CompletedProcess(
+            args=remote_cmd, returncode=exit_code, stdout=stdout, stderr=""
+        )
+    else:
+        result = run_remote(host, port, remote_cmd, ssh_key=key)
 
     # Pull results back
     local_output = Path(output)

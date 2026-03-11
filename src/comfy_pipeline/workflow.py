@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _SEED_CONTROL_VALUES = {"fixed", "increment", "decrement", "randomize"}
 
 # ComfyUI widget type names. Everything else is a connection type.
-_WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN"}
+_WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
 
 
 def load_workflow(filepath: str | Path) -> dict:

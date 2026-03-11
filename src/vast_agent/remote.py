@@ -32,7 +32,8 @@ def ssh_command(
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
-        "-o", "ServerAliveInterval=30",
+        "-o", "TCPKeepAlive=yes",
+        "-o", "ServerAliveInterval=10",
         "-o", "ServerAliveCountMax=10",
         "-p", str(port),
     ]
@@ -104,6 +105,91 @@ def run_remote(
         )
 
     return result
+
+
+def run_remote_stream(
+    host: str,
+    port: int,
+    command: str,
+    ssh_key: str = "",
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run a remote command, capturing stdout while streaming stderr to terminal.
+
+    This is useful when you need to parse stdout (e.g. JSON) but still want
+    progress messages on stderr to be visible in real time.
+    """
+    cmd = ssh_command(host, port, ssh_key=ssh_key) + [command]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None, text=True)
+    stdout, _ = proc.communicate()
+
+    if check and proc.returncode != 0:
+        raise RemoteError(
+            f"Remote command failed (exit {proc.returncode}): {command}"
+        )
+
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout=stdout, stderr="")
+
+
+def run_remote_detached(
+    host: str,
+    port: int,
+    command: str,
+    ssh_key: str = "",
+) -> None:
+    """Start a command on the remote server via nohup, detached from SSH.
+
+    stdout/stderr are redirected to temp files. The exit code is written to
+    ``/tmp/comfy_exitcode`` when the command finishes.  Each invocation cleans
+    up files from any previous run first.
+    """
+    # Escape single quotes in the command so it survives bash -c '...' wrapping.
+    # The '\'' trick: close quote, add literal quote, reopen quote.
+    escaped = command.replace("'", "'\\''")
+    wrapper = (
+        "rm -f /tmp/comfy_exitcode /tmp/comfy_stdout.txt /tmp/comfy_stderr.log; "
+        f"nohup bash -c '{escaped}; echo $? > /tmp/comfy_exitcode' "
+        "> /tmp/comfy_stdout.txt 2> /tmp/comfy_stderr.log &"
+    )
+    run_remote(host, port, wrapper, ssh_key=ssh_key, capture=True)
+
+
+def poll_remote_done(
+    host: str,
+    port: int,
+    ssh_key: str = "",
+) -> int | None:
+    """Check whether the detached remote command has finished.
+
+    Returns the integer exit code if done, or ``None`` if still running.
+    """
+    result = run_remote(
+        host, port,
+        "cat /tmp/comfy_exitcode 2>/dev/null || true",
+        ssh_key=ssh_key, capture=True, check=False,
+    )
+    text = result.stdout.strip()
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def get_remote_file(
+    host: str,
+    port: int,
+    remote_path: str,
+    ssh_key: str = "",
+) -> str:
+    """Read a remote file's contents via cat. Returns empty string on failure."""
+    result = run_remote(
+        host, port,
+        f"cat {remote_path} 2>/dev/null || true",
+        ssh_key=ssh_key, capture=True, check=False,
+    )
+    return result.stdout
 
 
 def run_ssh_interactive(host: str, port: int, ssh_key: str = "") -> None:

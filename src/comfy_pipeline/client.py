@@ -78,7 +78,12 @@ class ComfyUIClient:
         r.raise_for_status()
         return r.json()
 
-    def wait_for_completion(self, prompt_id: str, timeout: int = 3600) -> dict:
+    def wait_for_completion(
+        self,
+        prompt_id: str,
+        timeout: int = 3600,
+        node_names: dict[str, str] | None = None,
+    ) -> dict:
         """Wait for prompt execution via WebSocket. Returns history."""
         ws = websocket.WebSocket()
         ws.connect(f"{self.ws_url}?clientId={self.client_id}")
@@ -99,7 +104,9 @@ class ComfyUIClient:
                     node = exec_data.get("node")
                     if node is None:
                         break  # execution complete
-                    print(f"  Executing node {node}...", file=__import__('sys').stderr)
+                    name = node_names.get(node, "") if node_names else ""
+                    label = f"{node} ({name})" if name else node
+                    print(f"  Executing node {label}...", file=__import__('sys').stderr)
 
                 elif msg_type == "execution_error":
                     raise RuntimeError(f"Execution error: {data['data']}")
