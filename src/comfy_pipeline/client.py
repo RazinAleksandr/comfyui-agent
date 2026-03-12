@@ -78,6 +78,18 @@ class ComfyUIClient:
         r.raise_for_status()
         return r.json()
 
+    def free_memory(self) -> None:
+        """Ask ComfyUI to unload models and free VRAM."""
+        try:
+            r = requests.post(
+                f"{self.base_url}/free",
+                json={"unload_models": True, "free_memory": True},
+                timeout=30,
+            )
+            r.raise_for_status()
+        except (requests.ConnectionError, requests.Timeout):
+            pass
+
     def wait_for_completion(
         self,
         prompt_id: str,

@@ -943,24 +943,31 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
             session.save()
 
-            # Send results — prefer postprocessed, fall back to all outputs
+            # Send only postprocessed + upscaled videos
             sent = False
             cost_str = ""
             if item.cost_usd is not None:
                 elapsed_min = (item.generation_end - item.generation_start) / 60 if item.generation_start and item.generation_end else 0
                 cost_str = f" | {elapsed_min:.0f}min ${item.cost_usd:.4f}"
-            for output_path in item.output_paths:
+            send_paths = [
+                p for p in item.output_paths
+                if Path(p).exists() and (
+                    "postprocessed" in p or Path(p).parent.name == "upscaled"
+                )
+            ]
+            if not send_paths:
+                # Fallback: send any video if no postprocessed/upscaled found
+                send_paths = [
+                    p for p in item.output_paths
+                    if Path(p).exists() and Path(p).suffix.lower() in (".mp4", ".webm", ".mov")
+                ]
+            for output_path in send_paths:
                 path = Path(output_path)
-                if path.exists() and path.suffix.lower() in (".mp4", ".webm", ".mov"):
+                label = "postprocessed" if "postprocessed" in str(path) else path.parent.name
+                if path.suffix.lower() in (".mp4", ".webm", ".mov"):
                     await chat.send_video(
                         video=str(path),
-                        caption=f"[{i}/{total}] {snippet}{cost_str}",
-                    )
-                    sent = True
-                elif path.exists():
-                    await chat.send_document(
-                        document=str(path),
-                        caption=f"[{i}/{total}] {snippet}{cost_str}",
+                        caption=f"[{i}/{total}] {label} | {snippet}{cost_str}",
                     )
                     sent = True
             if sent:

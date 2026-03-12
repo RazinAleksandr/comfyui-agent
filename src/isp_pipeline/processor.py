@@ -172,6 +172,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".avi", ".webm"}
 
 # Priority order: best quality first
 _SOURCE_PREFIXES = ("upscaled_", "refined_", "raw_")
+_SOURCE_DIR_NAMES = ("upscaled", "refined", "raw")
 
 
 def _strip_source_prefix(name: str) -> str:
@@ -186,8 +187,7 @@ def _pick_best_source(directory: Path) -> tuple[Path, str] | None:
     """Pick the single best source video from a result directory.
 
     Priority: upscaled > refined > raw > unprefixed.
-    Returns (source_path, output_filename) where output_filename is
-    ``postprocessed_<base>``, or None if no videos found.
+    Returns (source_path, output_filename) or None if no videos found.
     """
     videos = [
         str(f) for f in directory.iterdir()
@@ -197,8 +197,7 @@ def _pick_best_source(directory: Path) -> tuple[Path, str] | None:
     if best is None:
         return None
     source = Path(best)
-    base = _strip_source_prefix(source.name)
-    return source, f"postprocessed_{base}"
+    return source, source.name
 
 
 def process_directory(
@@ -221,14 +220,19 @@ def process_directory(
         picked = _pick_best_source(dirpath)
         if picked:
             source, out_name = picked
-            work.append((source, source.parent / out_name))
+            if source.parent.name in _SOURCE_DIR_NAMES:
+                pp_dir = source.parent.parent / "postprocessed"
+            else:
+                pp_dir = source.parent / "postprocessed"
+            work.append((source, pp_dir / out_name))
 
     # Fallback: if input_dir itself contains videos
     if not work:
         picked = _pick_best_source(input_dir)
         if picked:
             source, out_name = picked
-            work.append((source, source.parent / out_name))
+            pp_dir = input_dir / "postprocessed"
+            work.append((source, pp_dir / out_name))
 
     if not work:
         print(f"No video files found in {input_dir}", file=sys.stderr)
@@ -263,13 +267,21 @@ def pick_best_source(output_paths: list[str]) -> str | None:
     """Given a list of generation output paths, return the best one.
 
     Priority: upscaled > refined > raw > first video found.
+    Checks both filename prefixes (e.g. upscaled_video.mp4) and
+    parent directory names (e.g. upscaled/video.mp4).
     """
     videos = [p for p in output_paths if Path(p).suffix.lower() in VIDEO_EXTS]
     if not videos:
         return None
+    # Check filename prefixes first
     for pfx in _SOURCE_PREFIXES:
         for v in videos:
             if Path(v).name.startswith(pfx):
+                return v
+    # Check parent directory names
+    for dirname in _SOURCE_DIR_NAMES:
+        for v in videos:
+            if Path(v).parent.name == dirname:
                 return v
     return videos[0]
 
@@ -281,8 +293,9 @@ def postprocess_outputs(
     brightness: int = -5,
     vignette: int = 10,
 ) -> str | None:
-    """Pick the best video from output_paths, postprocess it in-place.
+    """Pick the best video from output_paths, postprocess it.
 
+    Saves into a sibling ``postprocessed/`` folder next to raw/refined/upscaled/.
     Returns the postprocessed file path, or None if nothing to process.
     """
     source = pick_best_source(output_paths)
@@ -290,10 +303,15 @@ def postprocess_outputs(
         return None
 
     source_path = Path(source)
-    base = _strip_source_prefix(source_path.name)
-    out_path = source_path.parent / f"postprocessed_{base}"
+    # Save into postprocessed/ sibling folder (same level as raw/, refined/, upscaled/)
+    if source_path.parent.name in _SOURCE_DIR_NAMES:
+        pp_dir = source_path.parent.parent / "postprocessed"
+    else:
+        pp_dir = source_path.parent / "postprocessed"
+    pp_dir.mkdir(parents=True, exist_ok=True)
+    out_path = pp_dir / source_path.name
 
-    logger.info("Postprocessing %s -> %s", source_path.name, out_path.name)
+    logger.info("Postprocessing %s -> postprocessed/%s", source_path.name, out_path.name)
     process_video(
         source_path, out_path,
         graininess=graininess,

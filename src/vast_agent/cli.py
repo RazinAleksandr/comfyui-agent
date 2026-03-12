@@ -33,7 +33,8 @@ DEFAULT_CONFIG = CONFIGS_DIR / "vast.yaml"
 SSH_POLL_INTERVAL = 10  # seconds between SSH readiness checks
 SSH_POLL_TIMEOUT = 600  # max seconds to wait for SSH
 INSTANCE_LOAD_TIMEOUT = 180  # seconds before giving up on a single offer
-MAX_RENT_ATTEMPTS = 3  # max offers to try before failing
+MAX_RENT_ATTEMPTS = 5  # max total attempts before failing
+RENT_RETRY_DELAY = 30  # seconds to wait before re-searching offers
 
 
 class LoadTimeoutError(Exception):
@@ -153,25 +154,58 @@ def _wait_for_ssh(
     )
 
 
+def _search_offers(client: VastClient, config: VastConfig) -> list[dict]:
+    """Search for offers matching config criteria."""
+    return client.search_offers(
+        gpu_name=config.gpu,
+        min_gpu_ram=config.min_gpu_ram,
+        disk_space=config.disk_space,
+        max_price=config.max_price,
+        geolocation=config.geolocation,
+        extra_filters=config.extra_filters or None,
+        max_bw_price=config.max_bw_price,
+    )
+
+
 def _rent_with_retry(
     client: VastClient,
     config: VastConfig,
     offers: list[dict],
 ) -> tuple[int, Instance]:
-    """Try renting offers in order, retrying on slow loads.
+    """Try renting offers in order, re-searching when the list is exhausted.
 
     Returns (instance_id, instance) on success.
     Raises VastAPIError if all attempts fail.
     """
-    attempts = min(MAX_RENT_ATTEMPTS, len(offers))
-    for i in range(attempts):
-        offer = offers[i]
+    tried_ids: set[int] = set()
+
+    for attempt in range(MAX_RENT_ATTEMPTS):
+        # Pick next untried offer, or re-search
+        offer = None
+        for o in offers:
+            if o["id"] not in tried_ids:
+                offer = o
+                break
+
+        if offer is None:
+            print(f"No untried offers left. Re-searching in {RENT_RETRY_DELAY}s...")
+            time.sleep(RENT_RETRY_DELAY)
+            offers = _search_offers(client, config)
+            for o in offers:
+                if o["id"] not in tried_ids:
+                    offer = o
+                    break
+            if offer is None:
+                print("Still no new offers available.")
+                continue
+
         offer_id = offer["id"]
+        tried_ids.add(offer_id)
         price = offer.get("dph_total", "?")
         gpu = offer.get("gpu_name", config.gpu)
         dl_gb = offer.get("internet_down_cost_per_tb", 0) / 1000
         print(
-            f"Attempt {i + 1}/{attempts}: renting {gpu} @ ${price}/hr, BW ${dl_gb:.4f}/GB (offer {offer_id})"
+            f"Attempt {attempt + 1}/{MAX_RENT_ATTEMPTS}: renting {gpu} @ ${price}/hr, BW ${dl_gb:.4f}/GB (offer {offer_id})"
         )
 
         try:
@@ -203,7 +237,7 @@ def _rent_with_retry(
             client.destroy_instance(instance_id)
 
     raise VastAPIError(
-        f"All {attempts} rent attempts failed"
+        f"All {MAX_RENT_ATTEMPTS} rent attempts failed"
     )
 
 
@@ -253,15 +287,7 @@ def rent(config_path: str | None):
         f">={config.disk_space}GB disk, <=${config.max_price}$/hr{geo_label})..."
     )
 
-    offers = client.search_offers(
-        gpu_name=config.gpu,
-        min_gpu_ram=config.min_gpu_ram,
-        disk_space=config.disk_space,
-        max_price=config.max_price,
-        geolocation=config.geolocation,
-        extra_filters=config.extra_filters or None,
-        max_bw_price=config.max_bw_price,
-    )
+    offers = _search_offers(client, config)
 
     if not offers:
         click.echo(
@@ -308,15 +334,7 @@ def up(workflow: str, config_path: str | None):
 
     # Step 1: Rent instance
     print(f"=== Renting {config.gpu} instance ===")
-    offers = client.search_offers(
-        gpu_name=config.gpu,
-        min_gpu_ram=config.min_gpu_ram,
-        disk_space=config.disk_space,
-        max_price=config.max_price,
-        geolocation=config.geolocation,
-        extra_filters=config.extra_filters or None,
-        max_bw_price=config.max_bw_price,
-    )
+    offers = _search_offers(client, config)
 
     if not offers:
         click.echo("No offers found matching criteria.", err=True)

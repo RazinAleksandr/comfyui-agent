@@ -131,7 +131,7 @@ def start_server(
 
     comfy_path = Path(config.comfyui_path)
     log_file = comfy_path / "comfyui.log"
-    cmd = [sys.executable, "main.py", "--listen", listen, "--port", str(port)]
+    cmd = [sys.executable, "main.py", "--listen", listen, "--port", str(port), "--normalvram"]
 
     # Ensure onnxruntime-gpu can find cuDNN/cuBLAS shipped via pip
     env = os.environ.copy()
