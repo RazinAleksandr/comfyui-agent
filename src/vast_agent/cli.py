@@ -459,6 +459,11 @@ def run(
     if json_output:
         cmd_parts[-1] += " --json-output"
 
+    # Clean remote output dir so rsync only pulls this run's files
+    run_remote(host, port,
+               f"rm -rf {shlex.quote(remote_output)} && mkdir -p {shlex.quote(remote_output)}",
+               ssh_key=key, capture=True, check=False)
+
     remote_cmd = " && ".join(cmd_parts)
 
     # Run remotely
