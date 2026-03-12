@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +20,41 @@ FILE_EXTS = {
     "video": {".mp4", ".mov", ".avi", ".webm"},
 }
 ALL_MEDIA_EXTS = FILE_EXTS["image"] | FILE_EXTS["video"]
+
+
+def _get_video_duration(path: Path) -> float:
+    """Get video duration in seconds via ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    return float(result.stdout.strip()) if result.returncode == 0 else 0.0
+
+
+def _trim_video(path: Path, max_seconds: float) -> Path:
+    """Trim video to max_seconds. Returns path to trimmed file."""
+    import sys
+    duration = _get_video_duration(path)
+    if duration <= 0 or duration <= max_seconds:
+        return path
+
+    print(f"  Trimming {path.name}: {duration:.1f}s -> {max_seconds:.1f}s", file=sys.stderr)
+    trimmed = Path(tempfile.mktemp(suffix=path.suffix, prefix="trimmed_"))
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(path),
+            "-t", str(max_seconds),
+            "-c", "copy",
+            str(trimmed),
+        ],
+        capture_output=True, check=True,
+    )
+    return trimmed
 
 
 def prepare_workflow(config: WorkflowConfig, client: ComfyUIClient) -> dict:
@@ -56,9 +93,16 @@ def run_single(
     for input_name, file_path in input_files.items():
         if input_name not in config.inputs:
             continue
+        # Trim video if it exceeds max_video_seconds
+        mapping = config.inputs[input_name]
+        if (
+            config.max_video_seconds > 0
+            and mapping.param.lower() in ("video", "videos")
+            and file_path.suffix.lower() in FILE_EXTS["video"]
+        ):
+            file_path = _trim_video(file_path, config.max_video_seconds)
         print(f"Uploading {input_name}...", file=sys.stderr)
         uploaded_name = client.upload_file(file_path)
-        mapping = config.inputs[input_name]
         injections.append((mapping.node_id, mapping.param, uploaded_name))
 
     workflow = inject_inputs(api_workflow, injections)

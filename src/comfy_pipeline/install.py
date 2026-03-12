@@ -133,6 +133,16 @@ def start_server(
     log_file = comfy_path / "comfyui.log"
     cmd = [sys.executable, "main.py", "--listen", listen, "--port", str(port)]
 
+    # Ensure onnxruntime-gpu can find cuDNN/cuBLAS shipped via pip
+    env = os.environ.copy()
+    site_pkgs = Path(sys.executable).resolve().parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    extra_lib_dirs = [
+        str(site_pkgs / "nvidia" / "cudnn" / "lib"),
+        str(site_pkgs / "nvidia" / "cublas" / "lib"),
+    ]
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = ":".join(extra_lib_dirs + ([existing] if existing else []))
+
     print(f"Starting ComfyUI on {listen}:{port}...")
     log_fh = open(log_file, "a")
     proc = subprocess.Popen(
@@ -140,6 +150,7 @@ def start_server(
         cwd=str(comfy_path),
         stdout=log_fh,
         stderr=log_fh,
+        env=env,
         start_new_session=True,  # detach from parent so it survives CLI exit
     )
 

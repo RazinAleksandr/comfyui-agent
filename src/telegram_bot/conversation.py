@@ -8,9 +8,10 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackContext,
+    CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
@@ -20,6 +21,7 @@ from telegram.ext import (
 from telegram_bot.config import BotConfig
 from telegram_bot.parse_session import ParseSession, QueuedGeneration
 from telegram_bot.studio_client import StudioClient
+from isp_pipeline.processor import postprocess_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 (
     WAITING_IMAGE, WAITING_VIDEO, WAITING_PROMPT, WAITING_FEEDBACK,
-    PARSE_WAITING_IMAGE, PARSE_REVIEWING, PARSE_GENERATING,
-    RESUME_CHOOSING,
-) = range(8)
+    PARSE_CHOOSING_PLATFORMS, PARSE_WAITING_IMAGE, PARSE_REVIEWING,
+    PARSE_GENERATING, RESUME_CHOOSING,
+) = range(9)
 
 # user_data keys
 KEY_IMAGE = "image_path"
@@ -42,6 +44,8 @@ KEY_PROMPT = "prompt"
 KEY_WORKFLOW = "workflow"
 KEY_TMPDIR = "tmpdir"
 KEY_PARSE_SESSION = "parse_session"
+KEY_PARSE_HASHTAGS = "parse_hashtags"
+KEY_PARSE_PLATFORMS = "parse_platforms"
 KEY_STUDIO_CLIENT = "studio_client"
 
 # Job name for idle-timeout scheduler
@@ -490,6 +494,16 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             await progress_msg.edit_text(f"Generation failed: {msg}")
             return WAITING_FEEDBACK
 
+        # ISP post-processing on the best output
+        if outputs:
+            try:
+                pp_path = postprocess_outputs(outputs)
+                if pp_path:
+                    outputs.append(pp_path)
+                    logger.info("Postprocessed: %s", pp_path)
+            except Exception:
+                logger.warning("Postprocessing failed", exc_info=True)
+
         # Send results back
         if outputs:
             await progress_msg.edit_text("Done! Sending results...")
@@ -517,7 +531,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
     # -----------------------------------------------------------------------
 
     async def parse_command(update: Update, context: CallbackContext) -> int:
-        """Handle /parse [hashtags]. Ingest trends and start review flow."""
+        """Handle /parse [hashtags]. Ask which platforms to scrape."""
         if not _is_allowed(update, config):
             await update.message.reply_text("You are not authorized to use this bot.")
             return ConversationHandler.END
@@ -531,59 +545,84 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                 tag.lstrip("#") for tag in context.args if tag.strip()
             ]
 
-        status_msg = await update.message.reply_text(
-            "Parsing trending videos... This may take a minute."
+        context.user_data[KEY_PARSE_HASHTAGS] = hashtags
+        context.user_data[KEY_WORKFLOW] = config.default_workflow
+
+        keyboard = [
+            [InlineKeyboardButton("TikTok", callback_data="parse_plat:tiktok")],
+            [InlineKeyboardButton("Instagram", callback_data="parse_plat:instagram")],
+            [InlineKeyboardButton("Both", callback_data="parse_plat:tiktok,instagram")],
+        ]
+        await update.message.reply_text(
+            "Which platforms to parse?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return PARSE_CHOOSING_PLATFORMS
+
+    async def parse_platform_chosen(update: Update, context: CallbackContext) -> int:
+        """User picked platforms via inline button. Run the pipeline."""
+        query = update.callback_query
+        await query.answer()
+
+        platforms = query.data.removeprefix("parse_plat:").split(",")
+        context.user_data[KEY_PARSE_PLATFORMS] = platforms
+        hashtags: list[str] = context.user_data.get(KEY_PARSE_HASHTAGS, [])
+
+        plat_label = " + ".join(p.capitalize() for p in platforms)
+        status_msg = await query.edit_message_text(
+            f"Parsing {plat_label} trending videos... This may take a minute."
         )
 
         client = StudioClient(config.studio_base_url)
         context.user_data[KEY_STUDIO_CLIENT] = client
-        context.user_data[KEY_WORKFLOW] = config.default_workflow
 
         try:
             result = await client.run_pipeline(
                 influencer_id=config.studio_influencer_id,
-                platforms=["tiktok"],
+                platforms=platforms,
                 hashtags=hashtags or None,
-                limit=20,
+                limit=config.studio_parse_limit,
             )
         except Exception as exc:
             await status_msg.edit_text(f"Pipeline failed: {exc}")
             return ConversationHandler.END
 
-        # Extract selected videos from pipeline result
+        # Extract selected videos from all platforms
         platforms_out = result.get("platforms", [])
         if not platforms_out:
             await status_msg.edit_text("Pipeline returned no platform results.")
             return ConversationHandler.END
 
-        selected_dir = platforms_out[0].get("selected_dir", "")
-        if not selected_dir:
-            await status_msg.edit_text("Pipeline returned no selected_dir.")
-            return ConversationHandler.END
+        # Collect .mp4 files from every platform's selected_dir
+        video_files: list[Path] = []
+        first_selected_dir = ""
+        _views_re = re.compile(r"views(\d+)")
+        for plat in platforms_out:
+            sel_dir = plat.get("selected_dir", "")
+            if not sel_dir:
+                continue
+            if not first_selected_dir:
+                first_selected_dir = sel_dir
+            d = Path(sel_dir)
+            if d.exists():
+                video_files.extend(sorted(d.glob("*.mp4")))
 
-        video_dir = Path(selected_dir)
-        if not video_dir.exists():
-            await status_msg.edit_text(
-                "VLM stage selected 0 videos (directory does not exist)."
-            )
-            return ConversationHandler.END
-
-        video_files = sorted(video_dir.glob("*.mp4"))
         if not video_files:
             await status_msg.edit_text(
-                f"No .mp4 files in {video_dir}"
+                "VLM stage selected 0 videos across all platforms."
             )
             return ConversationHandler.END
 
         items = []
-        _views_re = re.compile(r"views(\d+)")
         for f in video_files:
             m = _views_re.search(f.stem)
             views = f"{int(m.group(1)):,}" if m else "?"
+            platform_tag = f.parent.parent.name  # e.g. "tiktok" or "instagram"
             items.append({
                 "_local_path": str(f),
                 "caption": f.stem,
                 "views": views,
+                "platform": platform_tag,
             })
 
         run_id = platforms_out[0].get("trend_run_id", 0)
@@ -591,13 +630,18 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             run_id=run_id,
             items=items,
             influencer_id=config.studio_influencer_id,
-            selected_dir=str(video_dir),
+            selected_dir=first_selected_dir,
             workflow=config.default_workflow,
         )
         context.user_data[KEY_PARSE_SESSION] = session
 
+        # Per-platform breakdown
+        from collections import Counter
+        plat_counts = Counter(it.get("platform", "unknown") for it in items)
+        breakdown = ", ".join(f"{cnt} from {p}" for p, cnt in plat_counts.items())
+
         await status_msg.edit_text(
-            f"Found {len(items)} filtered videos.\n"
+            f"Found {len(items)} filtered videos ({breakdown}).\n"
             "Send a reference photo to use for all generations."
         )
         return PARSE_WAITING_IMAGE
@@ -624,8 +668,11 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         views = item.get("views", "?")
         local_path = item.get("_local_path", "")
 
+        platform = item.get("platform", "")
+        platform_label = f" [{platform}]" if platform else ""
+
         text = (
-            f"[{idx}/{total}] {caption}\n"
+            f"[{idx}/{total}]{platform_label} {caption}\n"
             f"Views: {views}\n\n"
             "Send a prompt to approve, "
             "/skip to skip, /done to finish review."
@@ -710,6 +757,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             video_path=item.get("_local_path", ""),
             image_path=context.user_data.get(KEY_IMAGE, ""),
             prompt=prompt,
+            platform=item.get("platform", ""),
         )
         session.queue.append(queued)
         session.save()
@@ -823,8 +871,9 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             # Per-item output directory inside session_dir
             if session.session_dir is not None:
                 caption_slug = re.sub(r"[^a-zA-Z0-9_]", "_", item.caption)[:60]
+                platform_folder = item.platform or "unknown"
                 item_output_dir = str(
-                    session.session_dir / "results" / f"{i:03d}_{caption_slug}"
+                    session.session_dir / "results" / platform_folder / f"{i:03d}_{caption_slug}"
                 )
                 Path(item_output_dir).mkdir(parents=True, exist_ok=True)
             else:
@@ -851,11 +900,21 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
             item.status = "completed"
             item.output_paths = outputs
+
+            # ISP post-processing on the best output
+            try:
+                pp_path = postprocess_outputs(outputs)
+                if pp_path:
+                    item.output_paths.append(pp_path)
+                    logger.info("Postprocessed: %s", pp_path)
+            except Exception:
+                logger.warning("Postprocessing failed for %s", snippet, exc_info=True)
+
             session.save()
 
-            # Send results
+            # Send results — prefer postprocessed, fall back to all outputs
             sent = False
-            for output_path in outputs:
+            for output_path in item.output_paths:
                 path = Path(output_path)
                 if path.exists() and path.suffix.lower() in (".mp4", ".webm", ".mov"):
                     await chat.send_video(
@@ -970,6 +1029,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
     # -----------------------------------------------------------------------
 
     handler = ConversationHandler(
+        per_message=False,
         entry_points=[
             CommandHandler("start", start),
             CommandHandler("parse", parse_command),
@@ -991,6 +1051,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                     | (filters.TEXT & ~filters.COMMAND),
                     handle_feedback,
                 ),
+                CommandHandler("stop", stop),
+            ],
+            PARSE_CHOOSING_PLATFORMS: [
+                CallbackQueryHandler(parse_platform_chosen, pattern=r"^parse_plat:"),
                 CommandHandler("stop", stop),
             ],
             PARSE_WAITING_IMAGE: [

@@ -1,7 +1,7 @@
 gpu: RTX 5090
 min_gpu_ram: 32000 # MB
-disk_space: 150 # GB
-max_price: 0.60 # $/hr
+disk_space: 105 # GB
+max_price: 0.40 # $/hr
 image: vastai/comfy:v0.16.4-cuda-12.9-py312
 remote_path: /workspace/comfyui-agent
 label: comfyui-agent

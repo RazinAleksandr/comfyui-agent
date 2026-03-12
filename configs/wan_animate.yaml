@@ -1,6 +1,7 @@
 name: wan_animate
 description: "Wan 2.2 Animate - Character animation from reference image and video"
 workflow_file: workflows/Wan_Animate_workflow.json
+max_video_seconds: 8  # trim reference videos longer than this
 
 comfyui:
   repo: https://github.com/comfyanonymous/ComfyUI.git

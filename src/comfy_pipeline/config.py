@@ -53,6 +53,7 @@ class WorkflowConfig:
     parameters: dict[str, ParamMapping] = field(default_factory=dict)
     overrides: dict[str, dict] = field(default_factory=dict)
     extra_pip: list[str] = field(default_factory=list)
+    max_video_seconds: float = 0  # 0 = no limit
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> WorkflowConfig:
@@ -86,4 +87,5 @@ class WorkflowConfig:
             },
             overrides=data.get("overrides", {}),
             extra_pip=comfyui.get("extra_pip", []),
+            max_video_seconds=float(data.get("max_video_seconds", 0)),
         )

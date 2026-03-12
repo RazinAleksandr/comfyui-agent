@@ -36,18 +36,19 @@ class StudioClient:
         influencer_id: str,
         platforms: list[str] | None = None,
         hashtags: list[str] | None = None,
-        limit: int = 20,
-        source: str = "tiktok_custom",
+        limit: int = 10,
     ) -> dict:
         """Run the full pipeline (ingest → download → filter → VLM select).
 
         POST /api/v1/pipeline/run
         Returns PipelineRunOut with platforms[].selected_dir.
         """
+        _SOURCES = {"tiktok": "tiktok_custom", "instagram": "apify"}
+
         platform_names = platforms or ["tiktok"]
         platform_configs: dict = {}
         for name in platform_names:
-            cfg: dict = {"source": source, "limit": limit}
+            cfg: dict = {"source": _SOURCES[name], "limit": limit}
             if hashtags:
                 cfg["selector"] = {"hashtags": hashtags}
             platform_configs[name] = cfg

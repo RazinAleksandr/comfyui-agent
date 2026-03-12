@@ -26,6 +26,7 @@ class QueuedGeneration:
     video_path: str  # local path to downloaded trend video
     image_path: str  # user-provided reference image
     prompt: str  # user-provided prompt
+    platform: str = ""  # tiktok / instagram
     status: str = "pending"  # pending / generating / completed / failed
     output_paths: list[str] = field(default_factory=list)
 
@@ -93,6 +94,7 @@ class ParseSession:
                     "image_path": q.image_path,
                     "caption": q.caption,
                     "prompt": q.prompt,
+                    "platform": q.platform,
                     "status": q.status,
                     "output_paths": q.output_paths,
                 }
@@ -120,6 +122,7 @@ class ParseSession:
                 video_path=entry.get("video_path", ""),
                 image_path=entry.get("image_path", ""),
                 prompt=entry.get("prompt", ""),
+                platform=entry.get("platform", ""),
                 status=status,
                 output_paths=entry.get("output_paths", []),
             ))
