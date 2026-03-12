@@ -14,6 +14,7 @@ class VastConfig:
     min_gpu_ram: int = 32000  # MB
     disk_space: int = 150  # GB
     max_price: float = 0.50  # $/hr
+    max_bw_price: float = 0.0  # $/GB download; 0 = no limit
     image: str = "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel"
     remote_path: str = "/workspace/comfyui-agent"
     label: str = "comfyui-agent"
@@ -33,6 +34,7 @@ class VastConfig:
             min_gpu_ram=data.get("min_gpu_ram", cls.min_gpu_ram),
             disk_space=data.get("disk_space", cls.disk_space),
             max_price=data.get("max_price", cls.max_price),
+            max_bw_price=data.get("max_bw_price", cls.max_bw_price),
             image=data.get("image", cls.image),
             remote_path=data.get("remote_path", cls.remote_path),
             label=data.get("label", cls.label),

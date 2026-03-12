@@ -169,8 +169,9 @@ def _rent_with_retry(
         offer_id = offer["id"]
         price = offer.get("dph_total", "?")
         gpu = offer.get("gpu_name", config.gpu)
+        dl_gb = offer.get("internet_down_cost_per_tb", 0) / 1000
         print(
-            f"Attempt {i + 1}/{attempts}: renting {gpu} @ ${price}/hr (offer {offer_id})"
+            f"Attempt {i + 1}/{attempts}: renting {gpu} @ ${price}/hr, BW ${dl_gb:.4f}/GB (offer {offer_id})"
         )
 
         try:
@@ -259,6 +260,7 @@ def rent(config_path: str | None):
         max_price=config.max_price,
         geolocation=config.geolocation,
         extra_filters=config.extra_filters or None,
+        max_bw_price=config.max_bw_price,
     )
 
     if not offers:
@@ -267,7 +269,10 @@ def rent(config_path: str | None):
         )
         sys.exit(1)
 
-    print(f"Found {len(offers)} offers.")
+    best = offers[0]
+    dl_gb = best.get("internet_down_cost_per_tb", 0) / 1000
+    print(f"Found {len(offers)} offers (sorted by true session cost).")
+    print(f"Best: ${best.get('dph_total', 0):.3f}/hr + ${dl_gb:.4f}/GB bandwidth")
 
     instance_id, instance = _rent_with_retry(client, config, offers)
     _save_state(instance_id, instance.ssh_host, instance.ssh_port, instance.dph_total)
@@ -310,6 +315,7 @@ def up(workflow: str, config_path: str | None):
         max_price=config.max_price,
         geolocation=config.geolocation,
         extra_filters=config.extra_filters or None,
+        max_bw_price=config.max_bw_price,
     )
 
     if not offers:

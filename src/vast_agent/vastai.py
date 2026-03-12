@@ -74,6 +74,7 @@ class VastClient:
         max_price: float,
         geolocation: str = "",
         extra_filters: dict | None = None,
+        max_bw_price: float = 0.0,
     ) -> list[dict]:
         """Search for available GPU offers matching criteria.
 
@@ -106,7 +107,21 @@ class VastClient:
             filters.update(extra_filters)
 
         data = self._request("POST", "/api/v0/bundles/", json=filters)
-        return data.get("offers", [])
+        offers = data.get("offers", [])
+
+        # Filter by bandwidth price client-side (not supported by API)
+        if max_bw_price > 0:
+            max_bw_per_tb = max_bw_price * 1000
+            offers = [o for o in offers if o.get("internet_down_cost_per_tb", 0) <= max_bw_per_tb]
+
+        # Re-sort by true session cost (dph + estimated 80GB model download)
+        # so cheap-bandwidth hosts rank higher than expensive ones
+        for o in offers:
+            dl_per_gb = o.get("internet_down_cost_per_tb", 0) / 1000
+            o["_true_session_cost"] = o.get("dph_total", 0) + 80 * dl_per_gb
+        offers.sort(key=lambda o: o["_true_session_cost"])
+
+        return offers
 
     def create_instance(
         self,
