@@ -8,6 +8,7 @@ comfyui:
   path: /workspace/ComfyUI
   extra_pip:
     - sageattention
+    - cupy-cuda12x
 
 # Custom nodes required by this workflow
 custom_nodes:

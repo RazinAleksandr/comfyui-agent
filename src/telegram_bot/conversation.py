@@ -736,6 +736,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             session.init_session_dir(
                 PROJECT_ROOT / "output", str(image_path),
             )
+            # Use the persistent copy instead of /tmp
+            persistent_img = session.session_dir / "reference_image.jpg"
+            if persistent_img.exists():
+                context.user_data[KEY_IMAGE] = str(persistent_img)
 
         await update.message.reply_text("Got it. Showing first video...")
         return await _show_current_item(update, context)
@@ -994,10 +998,14 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             session = ParseSession.load(incomplete[0])
             context.user_data[KEY_PARSE_SESSION] = session
             context.user_data[KEY_WORKFLOW] = session.workflow
-            # Restore reference image from session dir
+            # Restore reference image from session dir and fix stale paths in queue
             ref_img = incomplete[0] / "reference_image.jpg"
             if ref_img.exists():
                 context.user_data[KEY_IMAGE] = str(ref_img)
+                for q in session.queue:
+                    if not Path(q.image_path).exists():
+                        q.image_path = str(ref_img)
+                session.save()
 
             remaining = session.pending_or_failed_count()
             total = len(session.queue)
@@ -1047,6 +1055,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         ref_img = session_dir / "reference_image.jpg"
         if ref_img.exists():
             context.user_data[KEY_IMAGE] = str(ref_img)
+            for q in session.queue:
+                if not Path(q.image_path).exists():
+                    q.image_path = str(ref_img)
+            session.save()
 
         context.user_data.pop("_resume_choices", None)
 
