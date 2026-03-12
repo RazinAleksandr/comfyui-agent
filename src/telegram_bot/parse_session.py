@@ -29,6 +29,11 @@ class QueuedGeneration:
     platform: str = ""  # tiktok / instagram
     status: str = "pending"  # pending / generating / completed / failed
     output_paths: list[str] = field(default_factory=list)
+    # Cost tracking
+    generation_start: float | None = None  # time.time() epoch
+    generation_end: float | None = None
+    dph_rate: float | None = None  # vast.ai $/hr at generation time
+    cost_usd: float | None = None  # computed: dph_rate * elapsed_hours
 
 
 @dataclass
@@ -97,6 +102,10 @@ class ParseSession:
                     "platform": q.platform,
                     "status": q.status,
                     "output_paths": q.output_paths,
+                    "generation_start": q.generation_start,
+                    "generation_end": q.generation_end,
+                    "dph_rate": q.dph_rate,
+                    "cost_usd": q.cost_usd,
                 }
                 for i, q in enumerate(self.queue)
             ],
@@ -125,6 +134,10 @@ class ParseSession:
                 platform=entry.get("platform", ""),
                 status=status,
                 output_paths=entry.get("output_paths", []),
+                generation_start=entry.get("generation_start"),
+                generation_end=entry.get("generation_end"),
+                dph_rate=entry.get("dph_rate"),
+                cost_usd=entry.get("cost_usd"),
             ))
 
         session = cls(

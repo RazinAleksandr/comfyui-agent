@@ -36,6 +36,8 @@ comfy-pipeline server stop -w wan_animate
 
 Server stays running between `run` calls — no model reload overhead. PID tracked in `<comfyui_path>/.comfyui.pid`.
 
+The server automatically sets `LD_LIBRARY_PATH` to include pip-installed cuDNN/cuBLAS libraries, ensuring `onnxruntime-gpu` uses `CUDAExecutionProvider` instead of falling back to CPU.
+
 ### `comfy-pipeline run -w <workflow>`
 
 Uploads inputs, executes the workflow, downloads results. Requires a running server.

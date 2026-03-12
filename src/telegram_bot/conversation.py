@@ -235,6 +235,18 @@ async def _get_server_cost() -> str:
     return "see vast-agent status"
 
 
+def _get_dph_rate() -> float | None:
+    """Read $/hr rate from .vast-instance.json state file."""
+    state_file = PROJECT_ROOT / ".vast-instance.json"
+    if not state_file.exists():
+        return None
+    try:
+        data = json.loads(state_file.read_text())
+        return data.get("dph_total")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Handler functions
 # ---------------------------------------------------------------------------
@@ -856,6 +868,11 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
         successes = 0
 
+        # Get vast.ai hourly rate for cost tracking
+        dph_rate = _get_dph_rate()
+        if dph_rate:
+            logger.info("Vast.ai rate: $%.3f/hr", dph_rate)
+
         for i, item in enumerate(queue, start=1):
             if item.status in ("completed",):
                 continue
@@ -880,6 +897,8 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                 item_output_dir = str(PROJECT_ROOT / "output")
 
             item.status = "generating"
+            item.dph_rate = dph_rate
+            item.generation_start = time.time()
             session.save()
 
             try:
@@ -891,6 +910,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                     output_dir=item_output_dir,
                 )
             except RuntimeError as e:
+                item.generation_end = time.time()
+                if dph_rate and item.generation_start:
+                    elapsed_hrs = (item.generation_end - item.generation_start) / 3600
+                    item.cost_usd = round(dph_rate * elapsed_hrs, 4)
                 item.status = "failed"
                 session.save()
                 await chat.send_message(
@@ -898,6 +921,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                 )
                 continue
 
+            item.generation_end = time.time()
+            if dph_rate and item.generation_start:
+                elapsed_hrs = (item.generation_end - item.generation_start) / 3600
+                item.cost_usd = round(dph_rate * elapsed_hrs, 4)
             item.status = "completed"
             item.output_paths = outputs
 
@@ -914,26 +941,32 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
             # Send results — prefer postprocessed, fall back to all outputs
             sent = False
+            cost_str = ""
+            if item.cost_usd is not None:
+                elapsed_min = (item.generation_end - item.generation_start) / 60 if item.generation_start and item.generation_end else 0
+                cost_str = f" | {elapsed_min:.0f}min ${item.cost_usd:.4f}"
             for output_path in item.output_paths:
                 path = Path(output_path)
                 if path.exists() and path.suffix.lower() in (".mp4", ".webm", ".mov"):
                     await chat.send_video(
                         video=str(path),
-                        caption=f"[{i}/{total}] {snippet}",
+                        caption=f"[{i}/{total}] {snippet}{cost_str}",
                     )
                     sent = True
                 elif path.exists():
                     await chat.send_document(
                         document=str(path),
-                        caption=f"[{i}/{total}] {snippet}",
+                        caption=f"[{i}/{total}] {snippet}{cost_str}",
                     )
                     sent = True
             if sent:
                 successes += 1
 
         completed_total = sum(1 for q in queue if q.status == "completed")
+        total_cost = sum(q.cost_usd for q in queue if q.cost_usd)
+        cost_line = f"\nTotal cost: ${total_cost:.4f}" if total_cost else ""
         await progress_msg.edit_text(
-            f"Batch complete! {completed_total}/{total} videos generated.\n"
+            f"Batch complete! {completed_total}/{total} videos generated.{cost_line}\n"
             "Send feedback to adjust, or /stop to shut down."
         )
         return WAITING_FEEDBACK

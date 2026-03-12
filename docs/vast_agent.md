@@ -109,10 +109,15 @@ Common GPU names: `RTX 5090`, `RTX 4090`, `RTX 3090`, `RTX A6000`, `A100 SXM4`, 
 Instance state persisted in `.vast-instance.json`:
 
 ```json
-{"instance_id": 12345, "ssh_host": "ssh123.vast.ai", "ssh_port": 10600}
+{
+  "instance_id": 12345,
+  "ssh_host": "ssh123.vast.ai",
+  "ssh_port": 10600,
+  "dph_total": 0.449
+}
 ```
 
-Created by `rent`/`up`, deleted by `down`/`destroy`.
+`dph_total` is the hourly cost ($/hr) at rent time, used by the Telegram bot for per-generation cost tracking. Created by `rent`/`up`, deleted by `down`/`destroy`.
 
 ## Internal Flow
 

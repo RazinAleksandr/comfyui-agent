@@ -45,12 +45,13 @@ class LoadTimeoutError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _save_state(instance_id: int, ssh_host: str, ssh_port: int) -> None:
+def _save_state(instance_id: int, ssh_host: str, ssh_port: int, dph_total: float | None = None) -> None:
     """Save instance state to local JSON file."""
     state = {
         "instance_id": instance_id,
         "ssh_host": ssh_host,
         "ssh_port": ssh_port,
+        "dph_total": dph_total,
     }
     STATE_FILE.write_text(json.dumps(state, indent=2) + "\n")
 
@@ -269,7 +270,7 @@ def rent(config_path: str | None):
     print(f"Found {len(offers)} offers.")
 
     instance_id, instance = _rent_with_retry(client, config, offers)
-    _save_state(instance_id, instance.ssh_host, instance.ssh_port)
+    _save_state(instance_id, instance.ssh_host, instance.ssh_port, instance.dph_total)
     print(f"Instance ready! SSH: root@{instance.ssh_host} -p {instance.ssh_port}")
     print(f"State saved to {STATE_FILE}")
 
@@ -316,7 +317,7 @@ def up(workflow: str, config_path: str | None):
         sys.exit(1)
 
     instance_id, instance = _rent_with_retry(client, config, offers)
-    _save_state(instance_id, instance.ssh_host, instance.ssh_port)
+    _save_state(instance_id, instance.ssh_host, instance.ssh_port, instance.dph_total)
 
     host = instance.ssh_host
     port = instance.ssh_port

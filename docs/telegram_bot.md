@@ -7,8 +7,11 @@ src/telegram_bot/
   bot.py             Entry point + handler registration
   conversation.py    ConversationHandler state machine
   config.py          Config loading
-  parse_session.py   /parse session dataclasses + disk persistence
+  parse_session.py   /parse session dataclasses + disk persistence + cost tracking
   studio_client.py   Async HTTP client for the Parser API
+
+src/isp_pipeline/
+  processor.py       Video postprocessing (grain, sharpness, brightness, vignette)
 ```
 
 Calls `vast-agent` CLI via async subprocess — each layer talks to the next via CLI.
@@ -97,9 +100,10 @@ Bot:  Queued! (2 in queue, 2 left). Next video:
 You:  /done
 Bot:  Starting batch generation (2/2 videos). Renting GPU...
       Server started. Generating 2 videos...
-      [sends result 1]
-      [sends result 2]
+      [sends result 1 with caption: "[1/2] tiktok_dance... | 28min $0.2095"]
+      [sends result 2 with caption: "[2/2] girl_motorcycle... | 32min $0.2394"]
       Batch complete! 2/2 videos generated.
+      Total cost: $0.4489
 ```
 
 ### Parser API
@@ -138,10 +142,15 @@ output/parse_sessions/
     ├── session.json
     ├── reference_image.jpg
     └── results/
-        ├── 001_tiktok_20260305_views173500_.../
-        │   └── output.mp4
-        └── 002_tiktok_20260302_views7872_.../
-            └── output.mp4
+        ├── tiktok/
+        │   └── 001_tiktok_20260305_views173500_.../
+        │       ├── raw_AnimateDiff_00001-audio.mp4
+        │       ├── refined_AnimateDiff_00002-audio.mp4
+        │       ├── upscaled_AnimateDiff_00003-audio.mp4
+        │       └── postprocessed_AnimateDiff_00003-audio.mp4
+        └── instagram/
+            └── 002_insta_20260302_views7872_.../
+                └── ...
 ```
 
 ### `session.json` schema
@@ -162,8 +171,18 @@ output/parse_sessions/
       "image_path": "/abs/path/to/reference_image.jpg",
       "caption": "tiktok_20260305_views173500_...",
       "prompt": "girl dancing in the street",
+      "platform": "tiktok",
       "status": "completed",
-      "output_paths": ["results/001_.../output.mp4"]
+      "output_paths": [
+        "results/tiktok/001_.../raw_AnimateDiff_00001-audio.mp4",
+        "results/tiktok/001_.../refined_AnimateDiff_00002-audio.mp4",
+        "results/tiktok/001_.../upscaled_AnimateDiff_00003-audio.mp4",
+        "results/tiktok/001_.../postprocessed_AnimateDiff_00003-audio.mp4"
+      ],
+      "generation_start": 1741700000.0,
+      "generation_end": 1741701680.0,
+      "dph_rate": 0.449,
+      "cost_usd": 0.2095
     },
     {
       "index": 2,
@@ -171,8 +190,13 @@ output/parse_sessions/
       "image_path": "/abs/path/to/reference_image.jpg",
       "caption": "tiktok_20260302_views7872_...",
       "prompt": "girl on motorcycle",
+      "platform": "tiktok",
       "status": "pending",
-      "output_paths": []
+      "output_paths": [],
+      "generation_start": null,
+      "generation_end": null,
+      "dph_rate": null,
+      "cost_usd": null
     }
   ]
 }
@@ -180,12 +204,36 @@ output/parse_sessions/
 
 Item status lifecycle: `pending` -> `generating` -> `completed` / `failed`.
 
+### Cost tracking
+
+Each queue item records the vast.ai cost for that generation:
+
+| Field | Description |
+|-------|-------------|
+| `generation_start` | Unix timestamp when generation began |
+| `generation_end` | Unix timestamp when generation finished (including download) |
+| `dph_rate` | Vast.ai $/hr rate at time of generation (from `.vast-instance.json`) |
+| `cost_usd` | Computed: `dph_rate * (end - start) / 3600` |
+
+Cost is tracked even for failed generations (time spent before failure). The batch completion message shows per-video cost and total.
+
 ### Timeline of saves
 
 - **After sending reference image** — session dir created, reference image copied, empty queue saved
 - **After each approval** — new queue item saved with status `pending`
 - **Before each generation** — item status set to `generating`
-- **After each generation** — item status set to `completed` (with output paths) or `failed`
+- **After each generation** — item status set to `completed` (with output paths and cost) or `failed` (with cost of time spent)
+
+### Postprocessing
+
+After each successful generation, the best output video (priority: upscaled > refined > raw) is automatically postprocessed with ISP-style film effects:
+
+- **Film grain** (graininess=40)
+- **Sharpening** (sharpness=20)
+- **Brightness correction** (brightness=-5)
+- **Vignette** (vignette=10)
+
+The postprocessed file is saved as `postprocessed_*.mp4` alongside the raw outputs and included in the session's `output_paths`.
 
 ## Resume (`/resume`)
 
@@ -217,6 +265,7 @@ default_workflow: wan_animate
 idle_timeout_minutes: 30
 studio_base_url: "http://localhost:8000"   # Parser API endpoint
 studio_influencer_id: "altf4girl"          # influencer for trend discovery
+studio_parse_limit: 5                      # max videos to fetch per platform
 ```
 
 Token resolution: `${ENV_VAR}` syntax, `$ENV_VAR`, literal string, or fallback to `TELEGRAM_BOT_TOKEN` env var.

@@ -3,7 +3,7 @@
 Automated video generation pipeline: Telegram bot -> VastAI GPU management -> ComfyUI workflow execution.
 
 ```
-User (Telegram) -> Telegram Bot -> Parser API (trend discovery) -> VastAI Agent -> ComfyUI Pipeline (remote GPU)
+User (Telegram) -> Telegram Bot -> Parser API (trend discovery) -> VastAI Agent -> ComfyUI Pipeline (remote GPU) -> ISP Postprocessing
 ```
 
 ## Setup
@@ -45,7 +45,7 @@ cp .env.example .env
 ```bash
 # Edit configs if needed
 nano configs/vast.yaml         # GPU type, price, disk, SSH key
-nano configs/telegram.yaml     # allowed_users, default workflow, idle timeout, studio API
+nano configs/telegram.yaml     # allowed_users, default workflow, idle timeout, studio API, parse limit
 # Set allowed_users to your Telegram user ID (get it from @userinfobot)
 ```
 
@@ -101,7 +101,9 @@ After generation you enter a **feedback loop** — you can:
 3. For each video, send a **text prompt** to approve or `/skip` to skip
 4. `/done` or run out of videos — bot rents GPU once and generates all approved videos in batch
 
-All inputs and outputs are logged to `output/parse_sessions/` — see [Session Logging](#session-logging).
+Each generated video is automatically **postprocessed** (film grain, sharpening, brightness correction, vignette) and the final version is sent alongside the raw outputs.
+
+All inputs, outputs, and **per-video cost tracking** are logged to `output/parse_sessions/` — see [Session Logging](#session-logging).
 
 #### Resume (`/resume`)
 
@@ -132,17 +134,28 @@ The `/parse` flow persists session data to disk for logging and crash recovery:
 output/
 └── parse_sessions/
     └── 20260311_174413/              # timestamp of pipeline run
-        ├── session.json              # manifest: ref image, queue, status per item
+        ├── session.json              # manifest: ref image, queue, status, cost per item
         ├── reference_image.jpg       # copy of user's reference photo
         └── results/                  # generation outputs
-            ├── 001_tiktok_dance_.../
-            │   └── output.mp4
-            └── 002_tiktok_walk_.../
-                └── output.mp4
+            ├── tiktok/
+            │   └── 001_tiktok_dance_.../
+            │       ├── raw_AnimateDiff_00001-audio.mp4
+            │       ├── refined_AnimateDiff_00002-audio.mp4
+            │       ├── upscaled_AnimateDiff_00003-audio.mp4
+            │       └── postprocessed_AnimateDiff_00003-audio.mp4
+            └── instagram/
+                └── 002_insta_walk_.../
+                    └── ...
 ```
 
-`session.json` tracks each queued item with status (`pending` / `generating` / `completed` / `failed`), the prompt used, video path, and output paths. This lets you:
+`session.json` tracks each queued item with:
+- **Status**: `pending` / `generating` / `completed` / `failed`
+- **Prompt, video path, output paths** — full provenance for each generation
+- **Cost tracking**: generation start/end timestamps, vast.ai $/hr rate, computed cost per video
+
+This lets you:
 - Know exactly which reference image, video, and prompt produced each output
+- Track how much each generation costs on vast.ai
 - Resume failed batches with `/resume` instead of re-parsing from scratch
 
 ## VPS Deployment
@@ -189,6 +202,7 @@ src/
   comfy_pipeline/   ComfyUI workflow execution (runs on GPU server)
   vast_agent/       VastAI GPU rental + remote execution (runs on VPS)
   telegram_bot/     Telegram user interface (runs on VPS)
+  isp_pipeline/     Video postprocessing (grain, sharpness, brightness, vignette)
 
 configs/
   wan_animate.yaml  Wan 2.2 Animate workflow config
