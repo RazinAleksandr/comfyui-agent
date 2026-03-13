@@ -158,13 +158,29 @@ parameters:
     node_id: "315"
     param: strength_model
 
+# Per-character personal LoRA presets
+# The active character is selected by studio_influencer_id in telegram.yaml
+# Set strengths to 0 to disable personal LoRAs (e.g. for "nolora" character)
+characters:
+  altf4girl:
+    lora_high: altf4_high_noise.safetensors
+    lora_low: altf4_low_noise.safetensors
+    lora_high_strength: 0.89
+    lora_low_strength: 0.89
+  emi2souls:
+    lora_high: emi2soul_high_noise_epoch2.safetensors
+    lora_low: emi2soul_low_noise_epoch2.safetensors
+    lora_high_strength: 0.89
+    lora_low_strength: 0.89
+  nolora:
+    lora_high: ""
+    lora_low: ""
+    lora_high_strength: 0
+    lora_low_strength: 0
+
 # Override node parameters for ALL runs
 overrides:
   "314":
     strength_model: 1.0        # i2v distillation LoRA
   "315":
     strength_model: 1.0        # relight LoRA
-  "463":
-    strength_model: 0.89       # personal LoRA (high noise)
-  "464":
-    strength_model: 0.89       # personal LoRA (low noise)

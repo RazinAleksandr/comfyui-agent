@@ -113,6 +113,9 @@ def run_single(
     if cli_overrides:
         workflow = apply_overrides(workflow, cli_overrides)
 
+    # Free VRAM from previous run before queuing
+    client.free_memory()
+
     # Queue and wait
     print("Queuing prompt...", file=sys.stderr)
     prompt_id = client.queue_prompt(workflow)

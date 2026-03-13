@@ -40,6 +40,15 @@ class ParamMapping:
 
 
 @dataclass
+class CharacterConfig:
+    """Per-character personal LoRA preset."""
+    lora_high: str = ""
+    lora_low: str = ""
+    lora_high_strength: float = 0.89
+    lora_low_strength: float = 0.89
+
+
+@dataclass
 class WorkflowConfig:
     name: str
     description: str
@@ -54,6 +63,21 @@ class WorkflowConfig:
     overrides: dict[str, dict] = field(default_factory=dict)
     extra_pip: list[str] = field(default_factory=list)
     max_video_seconds: float = 0  # 0 = no limit
+    characters: dict[str, CharacterConfig] = field(default_factory=dict)
+
+    def character_set_args(self, character_id: str) -> list[str]:
+        """Return --set key=value pairs for the given character's LoRAs."""
+        char = self.characters.get(character_id)
+        if not char:
+            return []
+        args: list[str] = []
+        if char.lora_high:
+            args.append(f"lora_high={char.lora_high}")
+        if char.lora_low:
+            args.append(f"lora_low={char.lora_low}")
+        args.append(f"lora_high_strength={char.lora_high_strength}")
+        args.append(f"lora_low_strength={char.lora_low_strength}")
+        return args
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> WorkflowConfig:
@@ -88,4 +112,7 @@ class WorkflowConfig:
             overrides=data.get("overrides", {}),
             extra_pip=comfyui.get("extra_pip", []),
             max_video_seconds=float(data.get("max_video_seconds", 0)),
+            characters={
+                k: CharacterConfig(**v) for k, v in data.get("characters", {}).items()
+            },
         )

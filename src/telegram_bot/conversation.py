@@ -21,11 +21,26 @@ from telegram.ext import (
 from telegram_bot.config import BotConfig
 from telegram_bot.parse_session import ParseSession, QueuedGeneration
 from telegram_bot.studio_client import StudioClient
+from comfy_pipeline.config import WorkflowConfig
 from isp_pipeline.processor import postprocess_outputs
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+
+
+def _character_set_args(workflow: str, character_id: str) -> list[str]:
+    """Load character LoRA --set args from the workflow config."""
+    cfg_path = CONFIGS_DIR / f"{workflow}.yaml"
+    if not cfg_path.exists():
+        return []
+    try:
+        wf_cfg = WorkflowConfig.from_yaml(cfg_path)
+        return wf_cfg.character_set_args(character_id)
+    except Exception:
+        logger.warning("Failed to load character config for %s/%s", workflow, character_id)
+        return []
 
 # ---------------------------------------------------------------------------
 # Conversation states
@@ -185,6 +200,7 @@ async def _run_generation(
     prompt: str,
     output_dir: str = "output",
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
+    extra_set_args: list[str] | None = None,
 ) -> list[str]:
     """Run a generation via vast-agent and return list of local output paths."""
     cmd: list[str] = [
@@ -196,6 +212,8 @@ async def _run_generation(
         "--json-output",
         "-o", output_dir,
     ]
+    for arg in extra_set_args or []:
+        cmd.extend(["--set", arg])
 
     logger.info("Running generation: %s", " ".join(cmd))
     rc, stdout, stderr = await _run_subprocess(*cmd, stream=True, progress_callback=progress_callback)
@@ -493,6 +511,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
         try:
             output_dir = str(PROJECT_ROOT / "output")
+            char_args = _character_set_args(workflow, config.studio_influencer_id)
             outputs = await _run_generation(
                 workflow=workflow,
                 image_path=image_path,
@@ -500,6 +519,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                 prompt=prompt,
                 output_dir=output_dir,
                 progress_callback=_progress_cb,
+                extra_set_args=char_args,
             )
         except RuntimeError as e:
             msg = str(e)[:4000]
@@ -905,6 +925,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             item.generation_start = time.time()
             session.save()
 
+            char_args = _character_set_args(workflow, session.influencer_id)
             try:
                 outputs = await _run_generation(
                     workflow=workflow,
@@ -912,6 +933,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
                     video_path=item.video_path,
                     prompt=item.prompt,
                     output_dir=item_output_dir,
+                    extra_set_args=char_args,
                 )
             except RuntimeError as e:
                 item.generation_end = time.time()
