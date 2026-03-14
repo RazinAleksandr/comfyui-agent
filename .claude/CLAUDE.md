@@ -1,0 +1,1 @@
+This is a project for making automated contect generation for ai influencers. It already contain backend in src folder, contain all docs and readme. also i add frontend created in figma. your goal is to research all codebase of backend and frontend and built it ready to production connecting frontend with backend.

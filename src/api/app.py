@@ -7,11 +7,30 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
+from starlette.responses import FileResponse
+from starlette.types import Receive, Scope, Send
 
 from api.deps import init_deps
 from api.routes import generation, health, influencers, jobs, parser
 from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles that falls back to index.html for SPA client-side routing."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except Exception:
+            # If the file is not found, serve index.html for SPA routing
+            index = Path(self.directory) / "index.html"  # type: ignore[arg-type]
+            if index.is_file():
+                response = FileResponse(index, media_type="text/html")
+                await response(scope, receive, send)
+            else:
+                raise
 
 API_PREFIX = "/api/v1"
 
@@ -54,6 +73,16 @@ def create_app(
     app.include_router(influencers.router, prefix=API_PREFIX)
     app.include_router(generation.router, prefix=API_PREFIX)
     app.include_router(jobs.router, prefix=API_PREFIX)
+
+    # Serve files from shared/ directory (images, videos, pipeline outputs)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/files", StaticFiles(directory=data_dir), name="shared-files")
+
+    # Serve the built frontend SPA in production
+    frontend_dist = project_root / "frontend-dist"
+    if (frontend_dist / "index.html").is_file():
+        app.mount("/", SPAStaticFiles(directory=frontend_dist, html=True), name="spa")
+
     return app
 
 

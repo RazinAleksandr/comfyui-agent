@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -46,19 +49,20 @@ async def start_pipeline(body: PipelineRunRequest) -> dict:
 
 @router.get("/runs")
 async def list_runs(influencer_id: str, limit: int = 20) -> list[dict]:
-    """List pipeline runs for an influencer."""
+    """List pipeline runs for an influencer, enriched with video file lists."""
     store = get_store()
-    return store.list_pipeline_runs(influencer_id, limit=limit)
+    runs = store.list_pipeline_runs(influencer_id, limit=limit)
+    return [_enrich_run(run, store.data_dir) for run in runs]
 
 
 @router.get("/runs/{run_id}")
 async def get_run(influencer_id: str, run_id: str) -> dict:
-    """Get a specific pipeline run."""
+    """Get a specific pipeline run, enriched with video file lists."""
     store = get_store()
     run = store.load_pipeline_run(influencer_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    return _enrich_run(run, store.data_dir)
 
 
 @router.post("/signals")
@@ -84,6 +88,126 @@ async def get_signals(body: ParseRequest) -> dict:
             for platform, videos in platform_videos.items()
         },
     }
+
+
+# --- Run enrichment ---
+
+
+def _fs_to_url(abs_path: str, data_dir: Path) -> str:
+    """Convert an absolute filesystem path to a /files/ URL."""
+    try:
+        rel = Path(abs_path).relative_to(data_dir)
+        return f"/files/{rel}"
+    except ValueError:
+        return abs_path
+
+
+def _list_videos(directory: str | None, data_dir: Path) -> list[dict[str, str]]:
+    """List video files in a directory, returning name + URL."""
+    if not directory:
+        return []
+    d = Path(directory)
+    if not d.is_dir():
+        return []
+    videos = []
+    for f in sorted(d.iterdir()):
+        if f.suffix.lower() in (".mp4", ".webm", ".mkv", ".mov"):
+            videos.append({
+                "file_name": f.name,
+                "url": _fs_to_url(str(f), data_dir),
+            })
+    return videos
+
+
+def _load_json(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    """Enrich a pipeline run manifest with video lists and sub-report data."""
+    for plat in run.get("platforms", []):
+        base_dir = run.get("base_dir", "")
+        platform_name = plat.get("platform", "")
+        plat_dir = Path(base_dir) / platform_name if base_dir else None
+
+        # Downloads
+        download_dir = str(plat_dir / "downloads" / platform_name) if plat_dir else None
+        # Also check downloads/ directly (some runs put files there)
+        if download_dir and not Path(download_dir).is_dir() and plat_dir:
+            download_dir = str(plat_dir / "downloads")
+        plat["download_videos"] = _list_videos(download_dir, data_dir)
+
+        # Filtered
+        plat["filtered_videos"] = _list_videos(plat.get("filtered_dir"), data_dir)
+
+        # Selected (VLM-approved)
+        plat["selected_videos"] = _list_videos(plat.get("selected_dir"), data_dir)
+
+        # Candidate filter report
+        report = _load_json(plat.get("candidate_report_path"))
+        if report:
+            plat["filter_report"] = {
+                "total_candidates": report.get("total_candidates"),
+                "accepted": report.get("accepted"),
+                "rejected": report.get("rejected"),
+                "top_k": report.get("top_k"),
+                "top_candidates": [
+                    {
+                        "file_name": c.get("file_name"),
+                        "platform": c.get("platform"),
+                        "views": c.get("views"),
+                        "metrics": c.get("metrics"),
+                        "scores": c.get("scores"),
+                    }
+                    for c in report.get("top_candidates", [])
+                ],
+            }
+
+        # VLM summary
+        vlm = _load_json(plat.get("vlm_summary_path"))
+        if vlm:
+            plat["vlm_report"] = {
+                "model": vlm.get("model"),
+                "total": vlm.get("total"),
+                "accepted": vlm.get("accepted"),
+                "rejected": vlm.get("rejected"),
+                "accepted_top": [
+                    {
+                        "file_name": v.get("file_name"),
+                        "readiness": v.get("readiness"),
+                        "persona_fit": v.get("persona_fit"),
+                        "confidence": v.get("confidence"),
+                        "reasons": v.get("reasons"),
+                    }
+                    for v in vlm.get("accepted_top", [])
+                ],
+            }
+
+        # Platform manifest (ingested items with URLs, captions, views)
+        pm_path = str(plat_dir / "platform_manifest.json") if plat_dir else None
+        pm = _load_json(pm_path)
+        if pm:
+            plat["ingested_details"] = [
+                {
+                    "video_url": item.get("video_url"),
+                    "caption": item.get("caption"),
+                    "views": item.get("views"),
+                    "likes": item.get("likes"),
+                    "hashtags": item.get("hashtags"),
+                    "platform": item.get("platform"),
+                }
+                for item in pm.get("ingested_items", [])
+            ]
+
+    return run
 
 
 # --- Async job functions ---

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ class InfluencerOut(BaseModel):
     hashtags: list[str] | None = None
     video_suggestions_requirement: str | None = None
     reference_image_path: str | None = None
+    profile_image_url: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -81,6 +83,9 @@ def _safe_extension(filename: str) -> str:
 
 
 def _to_out(record) -> InfluencerOut:
+    profile_image_url = None
+    if record.reference_image_path:
+        profile_image_url = "/files/" + quote(record.reference_image_path, safe="/")
     return InfluencerOut(
         influencer_id=record.influencer_id,
         name=record.name,
@@ -88,6 +93,7 @@ def _to_out(record) -> InfluencerOut:
         hashtags=record.hashtags,
         video_suggestions_requirement=record.video_suggestions_requirement,
         reference_image_path=record.reference_image_path,
+        profile_image_url=profile_image_url,
         created_at=record.created_at.isoformat() if record.created_at else None,
         updated_at=record.updated_at.isoformat() if record.updated_at else None,
     )
