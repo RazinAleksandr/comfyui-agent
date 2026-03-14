@@ -1,0 +1,45 @@
+# Parser configuration
+# Use ${ENV_VAR} syntax to reference environment variables
+
+default_source: seed
+
+# Apify (paid scraping API)
+apify_token: ${APIFY_TOKEN}
+tiktok_apify_actor: ${TIKTOK_APIFY_ACTOR}
+instagram_apify_actor: ${INSTAGRAM_APIFY_ACTOR}
+apify_overfetch_multiplier: 1
+apify_cost_optimized: true
+apify_max_selector_terms: 1
+apify_fallback_to_seed: false
+apify_request_retries: 4
+apify_retry_backoff_sec: 1.5
+apify_retry_max_backoff_sec: 12.0
+
+# TikTok custom (browser-based, requires playwright)
+tiktok_query: "viral videos"
+tiktok_ms_tokens: ${TIKTOK_MS_TOKENS}
+tiktok_custom_headless: true
+tiktok_custom_sessions: 1
+tiktok_custom_sleep_after: 3
+tiktok_custom_browser: chromium
+
+# Instagram custom (instaloader-based)
+instagram_query: "reels trends"
+instagram_custom_username: ${INSTAGRAM_CUSTOM_USERNAME}
+instagram_custom_password: ${INSTAGRAM_CUSTOM_PASSWORD}
+instagram_custom_session_file: ${INSTAGRAM_CUSTOM_SESSION_FILE}
+instagram_custom_max_posts_per_tag: 120
+
+# yt-dlp downloader
+yt_dlp_command: yt-dlp
+yt_dlp_format: "bv*+ba/b"
+yt_dlp_merge_format: mp4
+yt_dlp_cookies_file: ${YT_DLP_COOKIES_FILE}
+download_timeout_sec: 900
+
+# Gemini VLM scoring
+gemini_api_key: ${GEMINI_API_KEY}
+
+# Directories (leave empty for defaults: shared/)
+workspace_data_dir: ""
+seed_data_dir: ""

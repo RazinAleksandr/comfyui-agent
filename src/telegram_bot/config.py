@@ -18,9 +18,9 @@ class BotConfig:
     allowed_users: list[int] = field(default_factory=list)
     default_workflow: str = "wan_animate"
     idle_timeout_minutes: int = 30
-    studio_base_url: str = "http://localhost:8000"
-    studio_influencer_id: str = "altf4girl"
-    studio_parse_limit: int = 10
+    backend_url: str = "http://localhost:8000"
+    default_influencer_id: str = "altf4girl"
+    default_parse_limit: int = 10
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BotConfig:
@@ -42,9 +42,9 @@ class BotConfig:
             allowed_users=data.get("allowed_users", []),
             default_workflow=data.get("default_workflow", cls.default_workflow),
             idle_timeout_minutes=data.get("idle_timeout_minutes", cls.idle_timeout_minutes),
-            studio_base_url=data.get("studio_base_url", cls.studio_base_url),
-            studio_influencer_id=data.get("studio_influencer_id", cls.studio_influencer_id),
-            studio_parse_limit=data.get("studio_parse_limit", cls.studio_parse_limit),
+            backend_url=data.get("backend_url", cls.backend_url),
+            default_influencer_id=data.get("default_influencer_id", cls.default_influencer_id),
+            default_parse_limit=data.get("default_parse_limit", cls.default_parse_limit),
         )
 
 

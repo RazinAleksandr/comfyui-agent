@@ -1,9 +1,22 @@
 # ComfyUI Agent
 
-Automated video generation pipeline: Telegram bot -> VastAI GPU management -> ComfyUI workflow execution.
+Unified backend for AI influencer video generation: trend discovery, GPU orchestration, and Telegram UI through a single REST API.
 
 ```
-User (Telegram) -> Telegram Bot -> Parser API (trend discovery) -> VastAI Agent -> ComfyUI Pipeline (remote GPU) -> ISP Postprocessing
+Clients (Telegram Bot, Frontend)
+    │
+    ▼
+FastAPI API (port 8000)
+├── /api/v1/parser/*       trend parsing pipeline
+├── /api/v1/influencers/*  influencer management
+├── /api/v1/generation/*   GPU server + workflow execution
+├── /api/v1/jobs/*         async job tracking
+└── /health
+    │
+    ├── trend_parser/   ingest → download → filter → VLM select
+    ├── vast_agent/     VastAI GPU rental + SSH execution
+    ├── isp_pipeline/   video postprocessing
+    └── comfy_pipeline/ ComfyUI workflow runner (remote GPU)
 ```
 
 ## Setup
@@ -30,23 +43,28 @@ source .venv/bin/activate
 1. Create a bot via [@BotFather](https://t.me/BotFather) — send `/newbot`, copy the token
 2. Get your user ID from [@userinfobot](https://t.me/userinfobot)
 
-**Parser API (optional, for `/parse` flow):**
+**Parser (for `/parse` flow):**
 
-The `/parse` command connects to a local AI Influencer Studio API to discover trending videos. See [docs/telegram_bot.md](docs/telegram_bot.md) for details.
+- **Gemini API key** — required for VLM video scoring ([https://aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+- **Apify token** — optional, for Apify-based scraping ([https://apify.com](https://apify.com))
+- **TikTok/Instagram credentials** — optional, for custom browser scraping (requires playwright)
 
 ### 3. Configuration
 
 ```bash
 # Set secrets
 cp .env.example .env
-# Edit .env — fill in VAST_API_KEY and TELEGRAM_BOT_TOKEN
+# Edit .env — fill in all required keys:
+#   VAST_API_KEY, TELEGRAM_BOT_TOKEN, HF_TOKEN
+#   GEMINI_API_KEY (required for /parse)
+#   APIFY_TOKEN, TIKTOK_MS_TOKENS, INSTAGRAM_* (optional, per source)
 ```
 
 ```bash
 # Edit configs if needed
 nano configs/vast.yaml         # GPU type, price, disk, SSH key
-nano configs/telegram.yaml     # allowed_users, default workflow, idle timeout, studio API, parse limit
-# Set allowed_users to your Telegram user ID (get it from @userinfobot)
+nano configs/telegram.yaml     # allowed_users, backend_url, default workflow
+nano configs/parser.yaml       # default source, VLM settings, filter params
 ```
 
 The `.env` file is loaded automatically by all CLIs. It is git-ignored.
@@ -54,6 +72,10 @@ The `.env` file is loaded automatically by all CLIs. It is git-ignored.
 ### 4. Verify
 
 ```bash
+# Test API
+comfy-api &
+curl http://localhost:8000/health
+
 # Test VastAI
 vast-agent rent && vast-agent status && vast-agent destroy
 
@@ -63,13 +85,43 @@ comfy-bot    # send /start to your bot in Telegram
 
 ## Usage
 
-### Telegram bot (recommended)
+### Two processes
+
+The backend runs as two separate processes on the VPS:
+
+```bash
+comfy-api --host 0.0.0.0 --port 8000    # FastAPI server
+comfy-bot                                 # Telegram bot (calls API via HTTP)
+```
+
+### API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/api/v1/parser/run` | Start trend parsing job |
+| `POST` | `/api/v1/parser/pipeline` | Run full pipeline (ingest→download→filter→VLM) |
+| `POST` | `/api/v1/parser/signals` | Lightweight signal extraction |
+| `GET` | `/api/v1/parser/runs` | List pipeline runs for influencer |
+| `GET` | `/api/v1/parser/runs/{run_id}` | Get run details |
+| `GET` | `/api/v1/influencers` | List all influencers |
+| `GET` | `/api/v1/influencers/{id}` | Get influencer profile |
+| `PUT` | `/api/v1/influencers/{id}` | Upsert influencer |
+| `POST` | `/api/v1/influencers/{id}/reference-image` | Upload reference image |
+| `GET` | `/api/v1/generation/server/status` | GPU server status |
+| `POST` | `/api/v1/generation/server/up` | Start GPU server |
+| `POST` | `/api/v1/generation/server/down` | Destroy GPU server |
+| `POST` | `/api/v1/generation/run` | Start generation job |
+| `GET` | `/api/v1/jobs/{job_id}` | Poll job status |
+| `GET` | `/api/v1/jobs` | List recent jobs |
+
+Long-running operations (parsing, generation, server startup) return a `job_id` immediately. Poll `/api/v1/jobs/{job_id}` for status.
+
+### Telegram bot
 
 ```bash
 comfy-bot
 ```
-
-#### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -81,33 +133,7 @@ comfy-bot
 | `/stop` | Shut down GPU server and end session |
 | `/cancel` | End conversation without destroying the server |
 
-#### Manual mode (`/start`)
-
-1. `/start` — bot asks for a reference image
-2. Send a **photo** — bot asks for a reference video
-3. Send a **video** — bot asks for a prompt
-4. Send **text prompt** — bot rents a GPU (if needed), runs the pipeline, sends back the generated video
-
-After generation you enter a **feedback loop** — you can:
-- Send **new text** to re-run with a different prompt (keeps same image/video)
-- Send **new image** or **new video** to swap that input and re-run
-- `/stop` — shuts down the GPU server and reports session cost
-- `/cancel` — ends conversation but leaves the GPU running
-
-#### Parser mode (`/parse`)
-
-1. `/parse #dance #trending` — bot calls the Parser API to discover trending videos
-2. Send a **reference photo** — shared across all generations
-3. For each video, send a **text prompt** to approve or `/skip` to skip
-4. `/done` or run out of videos — bot rents GPU once and generates all approved videos in batch
-
-Each generated video is automatically **postprocessed** (film grain, sharpening, brightness correction, vignette) and the final version is sent alongside the raw outputs.
-
-All inputs, outputs, and **per-video cost tracking** are logged to `output/parse_sessions/` — see [Session Logging](#session-logging).
-
-#### Resume (`/resume`)
-
-If the bot crashes or GPU fails mid-batch, `/resume` picks up where you left off. It scans `output/parse_sessions/` for incomplete sessions and resumes generation for pending/failed items.
+See [docs/telegram_bot.md](docs/telegram_bot.md) for conversation flow details.
 
 ### CLI only
 
@@ -122,45 +148,15 @@ vast-agent run -w wan_animate \
 vast-agent down
 ```
 
+See [docs/vast_agent.md](docs/vast_agent.md) for all commands.
+
 ### Direct server access
 
 If you already have a GPU server, use `comfy-pipeline` directly — see [docs/pipeline.md](docs/pipeline.md).
 
-## Session Logging
-
-The `/parse` flow persists session data to disk for logging and crash recovery:
-
-```
-output/
-└── parse_sessions/
-    └── 20260311_174413/              # timestamp of pipeline run
-        ├── session.json              # manifest: ref image, queue, status, cost per item
-        ├── reference_image.jpg       # copy of user's reference photo
-        └── results/                  # generation outputs
-            ├── tiktok/
-            │   └── 001_tiktok_dance_.../
-            │       ├── raw_AnimateDiff_00001-audio.mp4
-            │       ├── refined_AnimateDiff_00002-audio.mp4
-            │       ├── upscaled_AnimateDiff_00003-audio.mp4
-            │       └── postprocessed_AnimateDiff_00003-audio.mp4
-            └── instagram/
-                └── 002_insta_walk_.../
-                    └── ...
-```
-
-`session.json` tracks each queued item with:
-- **Status**: `pending` / `generating` / `completed` / `failed`
-- **Prompt, video path, output paths** — full provenance for each generation
-- **Cost tracking**: generation start/end timestamps, vast.ai $/hr rate, computed cost per video
-
-This lets you:
-- Know exactly which reference image, video, and prompt produced each output
-- Track how much each generation costs on vast.ai
-- Resume failed batches with `/resume` instead of re-parsing from scratch
-
 ## VPS Deployment
 
-For running the Telegram bot 24/7 on a cheap VPS ($5/mo):
+For running 24/7 on a VPS ($5/mo):
 
 ```bash
 git clone git@github.com:RazinAleksandr/comfyui-agent.git
@@ -171,13 +167,33 @@ cp .env.example .env
 # Edit .env with your keys
 ```
 
-systemd service:
+systemd services:
 
 ```bash
+# API server
+sudo tee /etc/systemd/system/comfy-api.service << 'EOF'
+[Unit]
+Description=ComfyUI API Server
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/path/to/comfyui-agent
+ExecStart=/path/to/comfyui-agent/.venv/bin/comfy-api --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Telegram bot
 sudo tee /etc/systemd/system/comfy-bot.service << 'EOF'
 [Unit]
 Description=ComfyUI Telegram Bot
-After=network.target
+After=network.target comfy-api.service
+Wants=comfy-api.service
 
 [Service]
 Type=simple
@@ -191,30 +207,39 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl enable comfy-bot
-sudo systemctl start comfy-bot
+sudo systemctl enable comfy-api comfy-bot
+sudo systemctl start comfy-api comfy-bot
 ```
 
 ## Project Structure
 
 ```
 src/
+  api/              FastAPI application (routes, deps, job manager)
+  trend_parser/     Trend discovery pipeline (ingest, download, filter, VLM)
   comfy_pipeline/   ComfyUI workflow execution (runs on GPU server)
   vast_agent/       VastAI GPU rental + remote execution (runs on VPS)
   telegram_bot/     Telegram user interface (runs on VPS)
   isp_pipeline/     Video postprocessing (grain, sharpness, brightness, vignette)
 
 configs/
-  wan_animate.yaml  Wan 2.2 Animate workflow config
+  parser.yaml       Trend parser settings (sources, VLM, filter)
   vast.yaml         VastAI GPU preferences
   telegram.yaml     Telegram bot settings
+  wan_animate.yaml  Wan 2.2 Animate workflow config
+  isp_postprocess.yaml  ISP postprocessing settings
 
-output/
-  parse_sessions/   Logged session data from /parse runs (gitignored)
+shared/             Data directory (gitignored)
+  influencers/      Per-influencer profiles, reference images, pipeline runs
+  downloads/        Downloaded video cache
+  seeds/            Seed data for development
+  parse_sessions/   Telegram /parse session logs
 ```
 
 ## Docs
 
+- [API Server](docs/api.md) — endpoints, async job system, dependencies
+- [Trend Parser](docs/trend_parser.md) — pipeline stages, sources, filter scoring, VLM evaluation
 - [ComfyUI Pipeline](docs/pipeline.md) — commands, workflow configs, batch mode, parameter overrides
-- [VastAI Agent](docs/vast_agent.md) — commands, config, state tracking
-- [Telegram Bot](docs/telegram_bot.md) — conversation flow, commands, parser API, session logging
+- [VastAI Agent](docs/vast_agent.md) — commands, config, state tracking, programmatic API
+- [Telegram Bot](docs/telegram_bot.md) — conversation flow, commands, session logging

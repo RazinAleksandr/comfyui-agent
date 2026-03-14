@@ -6,8 +6,8 @@ import logging
 import re
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
 from pathlib import Path
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackContext,
@@ -18,9 +18,9 @@ from telegram.ext import (
     filters,
 )
 
+from telegram_bot.backend_client import BackendClient
 from telegram_bot.config import BotConfig
 from telegram_bot.parse_session import ParseSession, QueuedGeneration
-from telegram_bot.studio_client import StudioClient
 from comfy_pipeline.config import WorkflowConfig
 from isp_pipeline.processor import postprocess_outputs
 
@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIGS_DIR = PROJECT_ROOT / "configs"
+
+
+def _set_args_list_to_dict(args: list[str]) -> dict[str, str]:
+    """Convert ['key=value', ...] to {'key': 'value', ...}."""
+    result: dict[str, str] = {}
+    for item in args:
+        eq = item.find("=")
+        if eq > 0:
+            result[item[:eq]] = item[eq + 1:]
+    return result
 
 
 def _character_set_args(workflow: str, character_id: str) -> list[str]:
@@ -61,7 +71,7 @@ KEY_TMPDIR = "tmpdir"
 KEY_PARSE_SESSION = "parse_session"
 KEY_PARSE_HASHTAGS = "parse_hashtags"
 KEY_PARSE_PLATFORMS = "parse_platforms"
-KEY_STUDIO_CLIENT = "studio_client"
+KEY_BACKEND_CLIENT = "backend_client"
 
 # Job name for idle-timeout scheduler
 IDLE_JOB_NAME = "idle_shutdown"
@@ -80,50 +90,6 @@ def _is_allowed(update: Update, config: BotConfig) -> bool:
         return False
     return user.id in config.allowed_users
 
-
-async def _run_subprocess(
-    *args: str,
-    stream: bool = False,
-    progress_callback: Callable[[str], Awaitable[None]] | None = None,
-) -> tuple[int, str, str]:
-    """Run a command via asyncio subprocess and return (returncode, stdout, stderr).
-
-    When *stream* is True, stdout/stderr lines are logged in real time so the
-    operator can follow progress (e.g. vast-agent rent attempts, SSH polling).
-    If *progress_callback* is provided (stream mode only), it is called with
-    each stderr line so the caller can relay progress to the user.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    if not stream:
-        stdout_bytes, stderr_bytes = await proc.communicate()
-        stdout = stdout_bytes.decode() if stdout_bytes else ""
-        stderr = stderr_bytes.decode() if stderr_bytes else ""
-        return proc.returncode, stdout, stderr
-
-    # Stream mode: read lines as they arrive and log them
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-
-    async def _read_stream(s, buf: list[str], level: int, cb=None) -> None:
-        async for raw in s:
-            line = raw.decode().rstrip()
-            if line:
-                buf.append(line)
-                logger.log(level, "[vast-agent] %s", line)
-                if cb is not None:
-                    await cb(line)
-
-    await asyncio.gather(
-        _read_stream(proc.stdout, stdout_lines, logging.INFO),
-        _read_stream(proc.stderr, stderr_lines, logging.WARNING, cb=progress_callback),
-    )
-    await proc.wait()
-    return proc.returncode, "\n".join(stdout_lines), "\n".join(stderr_lines)
 
 
 def _get_tmpdir(context: CallbackContext) -> Path:
@@ -162,106 +128,107 @@ def _reset_idle_timer(context: CallbackContext, config: BotConfig) -> None:
 async def _idle_shutdown_callback(context: CallbackContext) -> None:
     """Called when the idle timeout expires. Shuts down the GPU server."""
     logger.info("Idle timeout reached — shutting down server")
-    result = await _shutdown_server()
+    bot_config: BotConfig = context.job.data
+    result = await _shutdown_server(bot_config.backend_url)
     logger.info("Idle shutdown result: %s", result)
 
 
 # ---------------------------------------------------------------------------
-# vast-agent subprocess wrappers
+# Backend API wrappers (replaces subprocess calls to vast-agent)
 # ---------------------------------------------------------------------------
 
-async def _ensure_server_up(
-    workflow: str,
-    progress_callback: Callable[[str], Awaitable[None]] | None = None,
-) -> str:
-    """Make sure the GPU server is running. Returns a status message."""
+_JOB_POLL_INTERVAL = 5.0
+_JOB_POLL_TIMEOUT = 900.0
+
+
+async def _ensure_server_up(backend_url: str, workflow: str) -> str:
+    """Make sure the GPU server is running via backend API."""
+    client = BackendClient(backend_url)
+
     # Check current status
-    rc, _, _ = await _run_subprocess("vast-agent", "status")
-    if rc == 0:
+    status = await client.server_status()
+    if status.get("status") == "running":
         logger.info("Server already running")
         return "Server already running."
 
-    # Not running — bring it up
+    # Not running — bring it up via async job
     logger.info("Server not running, starting with workflow %s", workflow)
-    rc, stdout, stderr = await _run_subprocess(
-        "vast-agent", "up", "-w", workflow,
-        stream=True, progress_callback=progress_callback,
-    )
-    if rc != 0:
-        msg = stderr.strip() or stdout.strip() or "Unknown error"
-        raise RuntimeError(f"vast-agent up failed: {msg}")
+    job_id = await client.server_up(workflow)
+    result = await client.poll_job(job_id, timeout=_JOB_POLL_TIMEOUT)
+
+    if result.get("status") == "failed":
+        raise RuntimeError(f"Server startup failed: {result.get('error', 'unknown')}")
     return "Server started."
 
 
-async def _run_generation(
+async def _run_generation_via_api(
+    backend_url: str,
+    influencer_id: str,
     workflow: str,
     image_path: str,
     video_path: str,
     prompt: str,
-    output_dir: str = "output",
-    progress_callback: Callable[[str], Awaitable[None]] | None = None,
-    extra_set_args: list[str] | None = None,
+    set_args: dict[str, str] | None = None,
+    output_dir: str | None = None,
 ) -> list[str]:
-    """Run a generation via vast-agent and return list of local output paths."""
-    cmd: list[str] = [
-        "vast-agent", "run",
-        "-w", workflow,
-        "--input", f"reference_image={image_path}",
-        "--input", f"reference_video={video_path}",
-        "--set", f"prompt={prompt}",
-        "--json-output",
-        "-o", output_dir,
-    ]
-    for arg in extra_set_args or []:
-        cmd.extend(["--set", arg])
+    """Run a generation via backend API and return list of output paths."""
+    client = BackendClient(backend_url)
+    body: dict = {
+        "influencer_id": influencer_id,
+        "workflow": workflow,
+        "prompt": prompt,
+    }
+    if image_path:
+        body["reference_image"] = image_path
+    if video_path:
+        body["reference_video"] = video_path
+    if set_args:
+        body["set_args"] = set_args
+    if output_dir:
+        body["output_dir"] = output_dir
 
-    logger.info("Running generation: %s", " ".join(cmd))
-    rc, stdout, stderr = await _run_subprocess(*cmd, stream=True, progress_callback=progress_callback)
+    job_id = await client.start_generation(**body)
+    result = await client.poll_job(job_id, timeout=_JOB_POLL_TIMEOUT)
 
-    if rc != 0:
-        msg = stderr.strip() or stdout.strip() or "Unknown error"
-        raise RuntimeError(f"vast-agent run failed: {msg}")
+    if result.get("status") == "failed":
+        raise RuntimeError(f"Generation failed: {result.get('error', 'unknown')}")
 
-    # Parse JSON output to get file paths
+    gen_result = result.get("result", {})
+    return gen_result.get("outputs", [])
+
+
+async def _shutdown_server(backend_url: str) -> str:
+    """Destroy the GPU server via backend API."""
+    client = BackendClient(backend_url)
     try:
-        result = json.loads(stdout.strip())
-        return result.get("outputs", [])
-    except (json.JSONDecodeError, AttributeError):
-        logger.warning("Could not parse JSON output, returning raw stdout")
-        return []
-
-
-async def _shutdown_server() -> str:
-    """Destroy the GPU server via vast-agent down."""
-    rc, stdout, stderr = await _run_subprocess("vast-agent", "down", stream=True)
-    if rc != 0:
-        msg = stderr.strip() or stdout.strip() or "Unknown error"
-        logger.error("vast-agent down failed: %s", msg)
+        await client.server_down()
+        return "Server destroyed."
+    except Exception as exc:
+        msg = str(exc)
+        logger.error("Server shutdown failed: %s", msg)
         return f"Shutdown failed: {msg}"
-    return "Server destroyed."
 
 
-async def _get_server_cost() -> str:
-    """Get session cost from vast-agent status."""
-    rc, stdout, _ = await _run_subprocess("vast-agent", "status")
-    if rc != 0:
-        return "unknown"
-    # Try to extract cost line from status output
-    for line in stdout.splitlines():
-        if "cost" in line.lower() or "$" in line:
-            return line.strip()
-    return "see vast-agent status"
-
-
-def _get_dph_rate() -> float | None:
-    """Read $/hr rate from .vast-instance.json state file."""
-    state_file = PROJECT_ROOT / ".vast-instance.json"
-    if not state_file.exists():
-        return None
+async def _get_server_cost(backend_url: str) -> str:
+    """Get session cost from backend API."""
+    client = BackendClient(backend_url)
     try:
-        data = json.loads(state_file.read_text())
-        return data.get("dph_total")
-    except (json.JSONDecodeError, OSError):
+        status = await client.server_status()
+        dph = status.get("dph_total")
+        if dph:
+            return f"${dph}/hr"
+        return status.get("actual_status") or "unknown"
+    except Exception:
+        return "unknown"
+
+
+async def _get_dph_rate(backend_url: str) -> float | None:
+    """Get $/hr rate from backend API."""
+    client = BackendClient(backend_url)
+    try:
+        status = await client.server_status()
+        return status.get("dph_total")
+    except Exception:
         return None
 
 
@@ -415,8 +382,8 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             for job in job_queue.get_jobs_by_name(IDLE_JOB_NAME):
                 job.schedule_removal()
 
-        cost_info = await _get_server_cost()
-        result = await _shutdown_server()
+        cost_info = await _get_server_cost(config.backend_url)
+        result = await _shutdown_server(config.backend_url)
         await status_msg.edit_text(f"{result}\nSession cost: {cost_info}")
 
         # Clean up user data
@@ -452,57 +419,10 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             await update.message.reply_text("Missing prompt. Please send one.")
             return WAITING_PROMPT
 
-        # Progress messages
-        progress_msg = await update.message.reply_text("Renting GPU...")
-
-        # Build a throttled progress callback that edits progress_msg
-        _PROGRESS_PATTERNS = [
-            (re.compile(r"Uploading input files"), "Uploading input files..."),
-            (re.compile(r"Uploading (\w+)"), "Uploading {1}..."),
-            (re.compile(r"Running workflow on remote"), "Running workflow..."),
-            (re.compile(r"Queuing prompt"), "Queuing prompt..."),
-            (re.compile(r"Waiting for completion"), "Executing workflow..."),
-            (re.compile(r"Executing node \w+ \((\w+)\)"), None),  # handled specially
-            (re.compile(r"Saved:"), "Saving output..."),
-            (re.compile(r"Downloading results"), "Downloading results..."),
-        ]
-        _last_edit_time = 0.0
-        _node_count = 0
-        _THROTTLE_SECONDS = 3.0
-
-        async def _progress_cb(line: str) -> None:
-            nonlocal _last_edit_time, _node_count
-
-            text = None
-            for pattern, template in _PROGRESS_PATTERNS:
-                m = pattern.search(line)
-                if m:
-                    if template is None:
-                        # Executing node — count steps and show node type
-                        _node_count += 1
-                        node_type = m.group(1) if m.lastindex else "?"
-                        text = f"Step {_node_count}: {node_type}"
-                    elif "{1}" in template:
-                        text = template.replace("{1}", m.group(1))
-                    else:
-                        text = template
-                    break
-
-            if text is None:
-                return
-
-            now = time.monotonic()
-            if now - _last_edit_time < _THROTTLE_SECONDS:
-                return
-
-            try:
-                await progress_msg.edit_text(text)
-                _last_edit_time = now
-            except Exception:
-                logger.debug("Failed to edit progress message", exc_info=True)
+        progress_msg = await update.message.reply_text("Starting GPU server...")
 
         try:
-            server_status = await _ensure_server_up(workflow, progress_callback=_progress_cb)
+            server_status = await _ensure_server_up(config.backend_url, workflow)
             await progress_msg.edit_text(f"{server_status}\nRunning generation...")
         except RuntimeError as e:
             msg = str(e)[:4000]
@@ -510,16 +430,17 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             return WAITING_FEEDBACK
 
         try:
-            output_dir = str(PROJECT_ROOT / "output")
-            char_args = _character_set_args(workflow, config.studio_influencer_id)
-            outputs = await _run_generation(
+            char_args = _character_set_args(workflow, config.default_influencer_id)
+            set_args = _set_args_list_to_dict(char_args)
+            outputs = await _run_generation_via_api(
+                backend_url=config.backend_url,
+                influencer_id=config.default_influencer_id,
                 workflow=workflow,
                 image_path=image_path,
                 video_path=video_path,
                 prompt=prompt,
-                output_dir=output_dir,
-                progress_callback=_progress_cb,
-                extra_set_args=char_args,
+                set_args=set_args or None,
+                output_dir=str(PROJECT_ROOT / "output"),
             )
         except RuntimeError as e:
             msg = str(e)[:4000]
@@ -605,15 +526,15 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             f"Parsing {plat_label} trending videos... This may take a minute."
         )
 
-        client = StudioClient(config.studio_base_url)
-        context.user_data[KEY_STUDIO_CLIENT] = client
+        client = BackendClient(config.backend_url)
+        context.user_data[KEY_BACKEND_CLIENT] = client
 
         try:
             result = await client.run_pipeline(
-                influencer_id=config.studio_influencer_id,
+                influencer_id=config.default_influencer_id,
                 platforms=platforms,
                 hashtags=hashtags or None,
-                limit=config.studio_parse_limit,
+                limit=config.default_parse_limit,
             )
         except Exception as exc:
             await status_msg.edit_text(f"Pipeline failed: {exc}")
@@ -661,7 +582,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         session = ParseSession(
             run_id=run_id,
             items=items,
-            influencer_id=config.studio_influencer_id,
+            influencer_id=config.default_influencer_id,
             selected_dir=first_selected_dir,
             workflow=config.default_workflow,
         )
@@ -879,7 +800,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
 
         # Bring up the server once for the entire batch
         try:
-            server_status = await _ensure_server_up(workflow)
+            server_status = await _ensure_server_up(config.backend_url, workflow)
             await progress_msg.edit_text(
                 f"{server_status}\nGenerating {len(actionable)} videos..."
             )
@@ -893,7 +814,7 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
         successes = 0
 
         # Get vast.ai hourly rate for cost tracking
-        dph_rate = _get_dph_rate()
+        dph_rate = await _get_dph_rate(config.backend_url)
         if dph_rate:
             logger.info("Vast.ai rate: $%.3f/hr", dph_rate)
 
@@ -926,14 +847,17 @@ def build_conversation_handler(config: BotConfig) -> ConversationHandler:
             session.save()
 
             char_args = _character_set_args(workflow, session.influencer_id)
+            set_args = _set_args_list_to_dict(char_args)
             try:
-                outputs = await _run_generation(
+                outputs = await _run_generation_via_api(
+                    backend_url=config.backend_url,
+                    influencer_id=session.influencer_id,
                     workflow=workflow,
-                    image_path=item.image_path,
-                    video_path=item.video_path,
+                    reference_image=item.image_path,
+                    reference_video=item.video_path,
                     prompt=item.prompt,
                     output_dir=item_output_dir,
-                    extra_set_args=char_args,
+                    set_args=set_args,
                 )
             except RuntimeError as e:
                 item.generation_end = time.time()

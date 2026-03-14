@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import json
+from collections import Counter
+from datetime import UTC, datetime
+from pathlib import Path
+
+from trend_parser.adapters.types import RawTrendVideo
+from trend_parser.config import ParserConfig
+from trend_parser.downloader import TrendDownloadService
+from trend_parser.filter import CandidateFilterConfig, run_candidate_filter
+from trend_parser.ingest import TrendIngestService
+from trend_parser.persona import PersonaProfile
+from trend_parser.schemas import PipelinePlatformRunOut, PipelineRunOut, PipelineRunRequest
+from trend_parser.store import FilesystemStore
+from trend_parser.vlm import SelectorRunConfig, SelectorThresholds, run_selector
+
+
+class PipelineRunnerService:
+    def __init__(self, config: ParserConfig, store: FilesystemStore, seed_dir: Path):
+        self.config = config
+        self.store = store
+        self.seed_dir = seed_dir
+        self.ingest = TrendIngestService(config=config, seed_dir=seed_dir)
+        self.downloader = TrendDownloadService(config=config, downloads_dir=store.downloads_dir)
+
+    def run(self, request: PipelineRunRequest) -> PipelineRunOut:
+        influencer = self.store.load_influencer(request.influencer_id)
+        if influencer is None:
+            raise ValueError(f"Influencer '{request.influencer_id}' not found")
+
+        persona = self._to_persona(influencer)
+        enabled_platforms = [platform for platform, cfg in request.platforms.items() if cfg.enabled]
+        if not enabled_platforms:
+            raise ValueError("Enable at least one platform.")
+        if request.filter.enabled and not request.download.enabled:
+            raise ValueError("Filter stage requires downloads to be enabled.")
+        if request.vlm.enabled and not request.filter.enabled:
+            raise ValueError("Gemini stage requires filter stage to be enabled.")
+
+        started_at = datetime.now(UTC)
+        stamp = started_at.strftime("%Y%m%d_%H%M%S")
+        base_dir = self.store.influencer_pipeline_runs_dir(request.influencer_id) / stamp
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        platform_outputs: list[PipelinePlatformRunOut] = []
+        for platform, cfg in request.platforms.items():
+            platform_name = platform.lower().strip()
+            if not cfg.enabled:
+                continue
+
+            selector_payload = cfg.selector.model_dump()
+            if not selector_payload.get("hashtags"):
+                selector_payload["hashtags"] = influencer.hashtags or []
+
+            platform_dir = base_dir / platform_name
+            download_dir = platform_dir / "downloads"
+            analysis_dir = platform_dir / "analysis"
+            filtered_dir = platform_dir / "filtered"
+            vlm_dir = platform_dir / "vlm"
+            selected_dir = platform_dir / "selected"
+            rejected_dir = platform_dir / "rejected"
+
+            platform_output = self._run_platform(
+                influencer=influencer,
+                persona=persona,
+                platform_name=platform_name,
+                selector_payload=selector_payload,
+                cfg=cfg,
+                request=request,
+                platform_dir=platform_dir,
+                download_dir=download_dir,
+                analysis_dir=analysis_dir,
+                filtered_dir=filtered_dir,
+                vlm_dir=vlm_dir,
+                selected_dir=selected_dir,
+                rejected_dir=rejected_dir,
+                stamp=stamp,
+            )
+            platform_outputs.append(platform_output)
+
+        result = PipelineRunOut(
+            influencer_id=request.influencer_id,
+            started_at=started_at,
+            base_dir=str(base_dir.resolve()),
+            platforms=platform_outputs,
+        )
+        self.store.save_pipeline_manifest(
+            request.influencer_id,
+            stamp,
+            {
+                "influencer_id": request.influencer_id,
+                "started_at": started_at.isoformat(),
+                "base_dir": str(base_dir.resolve()),
+                "platforms": [item.model_dump(mode="json") for item in platform_outputs],
+                "request": request.model_dump(mode="json"),
+            },
+        )
+        return result
+
+    def _run_platform(
+        self,
+        *,
+        influencer,
+        persona,
+        platform_name: str,
+        selector_payload: dict,
+        cfg,
+        request: PipelineRunRequest,
+        platform_dir: Path,
+        download_dir: Path,
+        analysis_dir: Path,
+        filtered_dir: Path,
+        vlm_dir: Path,
+        selected_dir: Path,
+        rejected_dir: Path,
+        stamp: str,
+    ) -> PipelinePlatformRunOut:
+        collected = self.ingest.collect_raw(
+            platforms=[platform_name],
+            limit_per_platform=cfg.limit,
+            source=cfg.source,
+            selectors={platform_name: selector_payload},
+        )
+        videos = collected.get(platform_name, [])
+
+        download_records: list[dict] = []
+        download_counts: dict[str, int] = {}
+        if request.download.enabled:
+            download_records = self.downloader.download_raw_videos(
+                platform=platform_name,
+                videos=videos,
+                force=request.download.force,
+                download_dir=str(download_dir),
+            )
+            download_counts = dict(Counter(record["status"] for record in download_records))
+
+        candidate_report_path = None
+        has_downloads = download_counts.get("downloaded", 0) > 0
+        if request.filter.enabled and has_downloads:
+            try:
+                report, report_path = run_candidate_filter(
+                    CandidateFilterConfig(
+                        download_dir=download_dir,
+                        report_dir=analysis_dir,
+                        filtered_dir=filtered_dir,
+                        probe_seconds=request.filter.probe_seconds,
+                        top_k=request.filter.top_k,
+                        workers=request.filter.workers,
+                        sync_filtered=True,
+                    )
+                )
+                candidate_report_path = str(report_path.resolve())
+            except RuntimeError:
+                pass  # no videos to filter — continue gracefully
+
+        accepted = None
+        rejected = None
+        vlm_summary_path = None
+        if request.vlm.enabled and candidate_report_path is not None:
+            run_selector(
+                SelectorRunConfig(
+                    input_dir=filtered_dir,
+                    output_dir=vlm_dir,
+                    selected_dir=selected_dir,
+                    rejected_dir=rejected_dir,
+                    theme=request.vlm.theme,
+                    hashtags=influencer.hashtags or [],
+                    model=request.vlm.model,
+                    api_key_env=request.vlm.api_key_env,
+                    timeout_sec=request.vlm.timeout_sec,
+                    mock=request.vlm.mock,
+                    max_videos=request.vlm.max_videos,
+                    sync_folders=request.vlm.sync_folders,
+                    thresholds=SelectorThresholds(
+                        min_readiness=request.vlm.thresholds.min_readiness,
+                        min_confidence=request.vlm.thresholds.min_confidence,
+                        min_persona_fit=request.vlm.thresholds.min_persona_fit,
+                        max_occlusion_risk=request.vlm.thresholds.max_occlusion_risk,
+                        max_scene_cut_complexity=request.vlm.thresholds.max_scene_cut_complexity,
+                    ),
+                    persona=persona,
+                    video_suggestions_requirement=influencer.video_suggestions_requirement,
+                )
+            )
+            summary_file = _latest_summary(vlm_dir)
+            if summary_file is not None:
+                payload = json.loads(summary_file.read_text(encoding="utf-8"))
+                accepted = int(payload.get("accepted", 0))
+                rejected = int(payload.get("rejected", 0))
+                vlm_summary_path = str(summary_file.resolve())
+
+        manifest_payload = {
+            "platform": platform_name,
+            "source": cfg.source,
+            "selector": selector_payload,
+            "ingested_items": [_raw_video_to_dict(video) for video in videos],
+            "download_records": download_records,
+            "candidate_report_path": candidate_report_path,
+            "vlm_summary_path": vlm_summary_path,
+            "selected_dir": str(selected_dir.resolve()) if selected_dir.exists() else None,
+            "accepted": accepted,
+            "rejected": rejected,
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+        manifest_path = platform_dir / "platform_manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+        return PipelinePlatformRunOut(
+            platform=platform_name,
+            source=cfg.source,
+            ingested_items=len(videos),
+            download_counts=download_counts,
+            candidate_report_path=candidate_report_path,
+            filtered_dir=str(filtered_dir.resolve()) if request.filter.enabled else None,
+            vlm_summary_path=vlm_summary_path,
+            selected_dir=str(selected_dir.resolve()) if request.vlm.enabled else None,
+            accepted=accepted,
+            rejected=rejected,
+        )
+
+    def _to_persona(self, influencer) -> PersonaProfile | None:
+        persona_path = self.store.influencer_dir(influencer.influencer_id) / "persona.json"
+        if persona_path.exists():
+            payload = json.loads(persona_path.read_text(encoding="utf-8"))
+            return PersonaProfile.from_dict(payload)
+        return PersonaProfile(
+            persona_id=influencer.influencer_id,
+            name=influencer.name,
+            summary=influencer.description or "",
+        )
+
+
+def _latest_summary(output_dir: Path) -> Path | None:
+    summaries = sorted(output_dir.glob("vlm_summary_*.json"))
+    if not summaries:
+        return None
+    return summaries[-1]
+
+
+def _raw_video_to_dict(video: RawTrendVideo) -> dict:
+    return {
+        "platform": video.platform,
+        "source_item_id": video.source_item_id,
+        "video_url": video.video_url,
+        "caption": video.caption,
+        "hashtags": video.hashtags,
+        "audio": video.audio,
+        "style_hint": video.style_hint,
+        "published_at": video.published_at.isoformat() if video.published_at else None,
+        "views": video.views,
+        "likes": video.likes,
+        "comments": video.comments,
+        "shares": video.shares,
+    }

@@ -4,13 +4,14 @@ Manages GPU server lifecycle on VastAI and executes `comfy-pipeline` commands re
 
 ```
 src/vast_agent/
-  cli.py        Click CLI entry point
+  cli.py        Click CLI entry point (thin wrapper over service)
+  service.py    VastAgentService — programmatic interface used by API
   config.py     YAML config loading
   vastai.py     VastAI REST API wrapper
   remote.py     SSH/rsync operations
 ```
 
-## Commands
+## CLI Commands
 
 ### `vast-agent up -w <workflow>`
 
@@ -86,6 +87,55 @@ Show instance info, cost, SSH connectivity. Exits 0 if running and reachable, 1 
 ### `vast-agent destroy`
 
 Destroy instance immediately without graceful shutdown.
+
+## Programmatic API
+
+The `VastAgentService` class provides a Python interface used by the generation API routes:
+
+```python
+from vast_agent.service import VastAgentService
+
+svc = VastAgentService(config)
+
+# Check server status
+status = svc.status()           # → ServerStatus(running, instance_id, ssh_host, ...)
+
+# Full lifecycle
+status = svc.up(workflow="wan_animate")    # rent + push + bootstrap + setup + start
+result = svc.run(                          # upload inputs + run + download results
+    workflow="wan_animate",
+    inputs={"reference_image": "img.jpg", "reference_video": "vid.mp4"},
+    overrides={"prompt": "..."},
+    output_dir="./output"
+)                                          # → RunResult(outputs=[...], output_dir="...")
+svc.down()                                 # stop processes + destroy instance
+
+# Code sync
+svc.push()                                 # rsync code to remote
+```
+
+### ServerStatus
+
+```python
+@dataclass
+class ServerStatus:
+    running: bool
+    instance_id: int | None
+    ssh_host: str | None
+    ssh_port: int | None
+    actual_status: str | None
+    dph_total: float | None
+    ssh_reachable: bool
+```
+
+### RunResult
+
+```python
+@dataclass
+class RunResult:
+    outputs: list[str]   # local file paths of downloaded results
+    output_dir: str      # directory containing all outputs
+```
 
 ## Config
 

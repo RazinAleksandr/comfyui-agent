@@ -1,6 +1,6 @@
 # Telegram Bot
 
-User-facing conversation interface for video generation. Collects inputs via chat, manages GPU servers, runs workflows, sends results back.
+User-facing conversation interface for video generation. Collects inputs via chat, manages GPU servers through the backend API, runs workflows, sends results back.
 
 ```
 src/telegram_bot/
@@ -8,20 +8,20 @@ src/telegram_bot/
   conversation.py    ConversationHandler state machine
   config.py          Config loading
   parse_session.py   /parse session dataclasses + disk persistence + cost tracking
-  studio_client.py   Async HTTP client for the Parser API
+  backend_client.py  Async HTTP client for the unified backend API
 
 src/isp_pipeline/
   processor.py       Video postprocessing (grain, sharpness, brightness, vignette)
 ```
 
-Calls `vast-agent` CLI via async subprocess — each layer talks to the next via CLI.
+The bot is an HTTP client of the unified backend API. All parser and generation operations go through `BackendClient` → `comfy-api`.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `/start` | Manual mode — provide image, video, prompt one-by-one |
-| `/parse [#hashtags]` | Discover trending videos via Parser API, review & batch generate |
+| `/parse [#hashtags]` | Discover trending videos via backend API, review & batch generate |
 | `/resume` | Resume an interrupted batch generation from disk |
 | `/skip` | Skip the current video during `/parse` review |
 | `/done` | Finish `/parse` review early and start batch generation |
@@ -71,7 +71,7 @@ GPU server stays running between generations — no model reload overhead.
 
 ## Parser Flow (`/parse`)
 
-The `/parse` command connects to the AI Influencer Studio Parser API to discover and filter trending videos, then lets you batch-generate with a shared reference image.
+The `/parse` command calls the backend API to discover and filter trending videos, then lets you batch-generate with a shared reference image.
 
 ### How it works
 
@@ -106,38 +106,23 @@ Bot:  Starting batch generation (2/2 videos). Renting GPU...
       Total cost: $0.4489
 ```
 
-### Parser API
+### Backend interaction
 
-The bot calls `POST /api/v1/pipeline/run` on the Studio API (configured via `studio_base_url` in `telegram.yaml`). The pipeline:
+The bot uses `BackendClient` to call the backend API:
 
-1. **Ingests** trending videos from TikTok for the configured influencer
-2. **Downloads** the video files
-3. **Filters** by hashtags (if provided)
-4. **VLM-selects** the best candidates
-
-The API returns a `selected_dir` containing `.mp4` files that the bot presents for review.
-
-Request body:
-
-```json
-{
-  "influencer_id": "altf4girl",
-  "platforms": {
-    "tiktok": {
-      "source": "tiktok_custom",
-      "limit": 20,
-      "selector": {"hashtags": ["dance", "trending"]}
-    }
-  }
-}
-```
+1. `POST /api/v1/parser/pipeline` — starts the full pipeline (ingest → download → filter → VLM)
+2. Polls `GET /api/v1/jobs/{job_id}` until complete
+3. Receives `selected_dir` with `.mp4` files for review
+4. `POST /api/v1/generation/server/up` — starts GPU server
+5. `POST /api/v1/generation/run` — runs each approved video
+6. `POST /api/v1/generation/server/down` — destroys GPU after batch
 
 ## Session Logging
 
-Every `/parse` session is persisted to disk in `output/parse_sessions/`:
+Every `/parse` session is persisted to disk in `shared/parse_sessions/`:
 
 ```
-output/parse_sessions/
+shared/parse_sessions/
 └── 20260311_174413/
     ├── session.json
     ├── reference_image.jpg
@@ -153,57 +138,6 @@ output/parse_sessions/
                 └── ...
 ```
 
-### `session.json` schema
-
-```json
-{
-  "created_at": "2026-03-11T17:44:13",
-  "run_id": 42,
-  "influencer_id": "altf4girl",
-  "selected_dir": "/path/to/pipeline/selected",
-  "reference_image": "reference_image.jpg",
-  "workflow": "wan_animate",
-  "queue": [
-    {
-      "index": 1,
-      "trend_item_id": 0,
-      "video_path": "/abs/path/to/selected/tiktok_....mp4",
-      "image_path": "/abs/path/to/reference_image.jpg",
-      "caption": "tiktok_20260305_views173500_...",
-      "prompt": "girl dancing in the street",
-      "platform": "tiktok",
-      "status": "completed",
-      "output_paths": [
-        "results/tiktok/001_.../raw_AnimateDiff_00001-audio.mp4",
-        "results/tiktok/001_.../refined_AnimateDiff_00002-audio.mp4",
-        "results/tiktok/001_.../upscaled_AnimateDiff_00003-audio.mp4",
-        "results/tiktok/001_.../postprocessed_AnimateDiff_00003-audio.mp4"
-      ],
-      "generation_start": 1741700000.0,
-      "generation_end": 1741701680.0,
-      "dph_rate": 0.449,
-      "cost_usd": 0.2095
-    },
-    {
-      "index": 2,
-      "video_path": "/abs/path/to/selected/tiktok_....mp4",
-      "image_path": "/abs/path/to/reference_image.jpg",
-      "caption": "tiktok_20260302_views7872_...",
-      "prompt": "girl on motorcycle",
-      "platform": "tiktok",
-      "status": "pending",
-      "output_paths": [],
-      "generation_start": null,
-      "generation_end": null,
-      "dph_rate": null,
-      "cost_usd": null
-    }
-  ]
-}
-```
-
-Item status lifecycle: `pending` -> `generating` -> `completed` / `failed`.
-
 ### Cost tracking
 
 Each queue item records the vast.ai cost for that generation:
@@ -215,38 +149,16 @@ Each queue item records the vast.ai cost for that generation:
 | `dph_rate` | Vast.ai $/hr rate at time of generation (from `.vast-instance.json`) |
 | `cost_usd` | Computed: `dph_rate * (end - start) / 3600` |
 
-Cost is tracked even for failed generations (time spent before failure). The batch completion message shows per-video cost and total.
-
-### Timeline of saves
-
-- **After sending reference image** — session dir created, reference image copied, empty queue saved
-- **After each approval** — new queue item saved with status `pending`
-- **Before each generation** — item status set to `generating`
-- **After each generation** — item status set to `completed` (with output paths and cost) or `failed` (with cost of time spent)
-
 ### Postprocessing
 
-After each successful generation, the best output video (priority: upscaled > refined > raw) is automatically postprocessed with ISP-style film effects:
-
-- **Film grain** (graininess=40)
-- **Sharpening** (sharpness=20)
-- **Brightness correction** (brightness=-5)
-- **Vignette** (vignette=10)
-
-The postprocessed file is saved as `postprocessed_*.mp4` alongside the raw outputs and included in the session's `output_paths`.
+After each successful generation, the best output video (priority: upscaled > refined > raw) is automatically postprocessed with ISP-style film effects (grain, sharpness, brightness correction, vignette). The postprocessed file is saved as `postprocessed_*.mp4` alongside the raw outputs.
 
 ## Resume (`/resume`)
 
-If the bot crashes or the GPU fails mid-batch, the session is already on disk. `/resume` scans `output/parse_sessions/` for sessions with incomplete items:
+If the bot crashes or the GPU fails mid-batch, the session is already on disk. `/resume` scans `shared/parse_sessions/` for sessions with incomplete items:
 
 - If **one** incomplete session found — resumes it immediately
-- If **multiple** found — lists them for the user to choose:
-  ```
-  Incomplete sessions:
-  1. 20260311_174413 — 2/5 pending
-  2. 20260311_192030 — 3/3 pending
-  Reply with number to resume.
-  ```
+- If **multiple** found — lists them for the user to choose
 
 Items left in `generating` status (from a crash) are treated as `failed` on load and retried.
 
@@ -259,16 +171,14 @@ If no messages for `idle_timeout_minutes` (default: 30), the bot auto-destroys t
 `configs/telegram.yaml`:
 
 ```yaml
-token: ${TELEGRAM_BOT_TOKEN}     # resolved from .env
-allowed_users: [123456789]        # Telegram user ID whitelist
+token: ${TELEGRAM_BOT_TOKEN}       # resolved from .env
+allowed_users: [123456789]          # Telegram user ID whitelist
 default_workflow: wan_animate
 idle_timeout_minutes: 30
-studio_base_url: "http://localhost:8000"   # Parser API endpoint
-studio_influencer_id: "altf4girl"          # influencer for trend discovery
-studio_parse_limit: 5                      # max videos to fetch per platform
+backend_url: "http://localhost:8000"       # unified backend API
+default_influencer_id: "emi2souls"         # influencer for trend discovery
+default_parse_limit: 5                     # max videos to fetch per platform
 ```
-
-Token resolution: `${ENV_VAR}` syntax, `$ENV_VAR`, literal string, or fallback to `TELEGRAM_BOT_TOKEN` env var.
 
 ## State Machine
 

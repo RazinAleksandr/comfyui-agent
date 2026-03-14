@@ -1,0 +1,114 @@
+{
+  "platform": "tiktok",
+  "source": "apify",
+  "selector": {
+    "mode": "auto",
+    "search_terms": [],
+    "hashtags": [
+      "gymgirl"
+    ],
+    "min_views": null,
+    "min_likes": null,
+    "published_within_days": 30,
+    "require_topic_match": false,
+    "source_params": null
+  },
+  "ingested_items": [
+    {
+      "platform": "tiktok",
+      "source_item_id": "7606400084305136926",
+      "video_url": "https://www.tiktok.com/@rainsfitness/video/7606400084305136926",
+      "caption": "incline!!! #gymgirl ",
+      "hashtags": [
+        "gymgirl"
+      ],
+      "audio": "GEEKALEEK (Remix) [feat. Day1]",
+      "style_hint": null,
+      "published_at": "2026-02-13T17:17:20+00:00",
+      "views": 53400,
+      "likes": 5199,
+      "comments": 58,
+      "shares": 165
+    },
+    {
+      "platform": "tiktok",
+      "source_item_id": "7610547242620947734",
+      "video_url": "https://www.tiktok.com/@theabigibson/video/7610547242620947734",
+      "caption": "the girls who get it, get it \ud83d\udc85 \u2026 a reminder that sweat is NORMAL!!! | more fitness content like this on my page \ud83d\udc95 #gymtok #gymhumor #relatable #gymgirlproblems #gymanxiety ",
+      "hashtags": [
+        "gymtok",
+        "gymhumor",
+        "relatable",
+        "gymgirlproblems",
+        "gymanxiety"
+      ],
+      "audio": "original sound",
+      "style_hint": null,
+      "published_at": "2026-02-24T21:30:19+00:00",
+      "views": 4300000,
+      "likes": 67800,
+      "comments": 289,
+      "shares": 504
+    },
+    {
+      "platform": "tiktok",
+      "source_item_id": "7616750443917528351",
+      "video_url": "https://www.tiktok.com/@gymgurlsss/video/7616750443917528351",
+      "caption": "I don\u2019t mind the attention \n#baddie #gym #gymgirls #fyp ",
+      "hashtags": [
+        "baddie",
+        "gym",
+        "gymgirls",
+        "fyp"
+      ],
+      "audio": "original sound",
+      "style_hint": null,
+      "published_at": "2026-03-13T14:42:20+00:00",
+      "views": 38,
+      "likes": 0,
+      "comments": 0,
+      "shares": 1
+    }
+  ],
+  "download_records": [
+    {
+      "index": 1,
+      "platform": "tiktok",
+      "source_item_id": "7606400084305136926",
+      "source_url": "https://www.tiktok.com/@rainsfitness/video/7606400084305136926",
+      "status": "downloaded",
+      "local_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/downloads/tiktok/tiktok_20260213_views53400_uid7606400084305136926.mp4",
+      "file_ext": "mp4",
+      "file_size_bytes": 2029911,
+      "sha256": "fe5cbd4d4607258b42b84cd88fc9c7c028c2f120b576d0430ee601df7d812498"
+    },
+    {
+      "index": 2,
+      "platform": "tiktok",
+      "source_item_id": "7610547242620947734",
+      "source_url": "https://www.tiktok.com/@theabigibson/video/7610547242620947734",
+      "status": "downloaded",
+      "local_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/downloads/tiktok/tiktok_20260224_views4300000_uid7610547242620947734.mp4",
+      "file_ext": "mp4",
+      "file_size_bytes": 1865470,
+      "sha256": "92b7da511c65a62ed9d362de108dd121cc9b3818fb213a267a544ac96f9438f9"
+    },
+    {
+      "index": 3,
+      "platform": "tiktok",
+      "source_item_id": "7616750443917528351",
+      "source_url": "https://www.tiktok.com/@gymgurlsss/video/7616750443917528351",
+      "status": "downloaded",
+      "local_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/downloads/tiktok/tiktok_20260313_views38_uid7616750443917528351.mp4",
+      "file_ext": "mp4",
+      "file_size_bytes": 4416440,
+      "sha256": "7fc9737abae3c5ea7694b87c31fd17aaa85292aff8e45b48f2c626a5246c0399"
+    }
+  ],
+  "candidate_report_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/analysis/candidate_filter_report_20260313_145005.json",
+  "vlm_summary_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/vlm/vlm_summary_20260313_145035.json",
+  "selected_dir": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/selected",
+  "accepted": 1,
+  "rejected": 0,
+  "generated_at": "2026-03-13T14:50:35.925985+00:00"
+}

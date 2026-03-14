@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-03-13T14:50:35.924578+00:00",
+  "model": "gemini-3.1-flash-lite-preview",
+  "mock": false,
+  "input_dir": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/filtered",
+  "output_dir": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/vlm",
+  "sync_folders": true,
+  "selected_dir": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/selected",
+  "rejected_dir": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/rejected",
+  "persona": {
+    "persona_id": "emi2souls",
+    "name": "Emi Noir",
+    "summary": "Alt-aesthetic lifestyle creator with heterochromia (green and blue eyes) who wears decorative contact lenses (cat eyes, sharingan) as a signature style. Content focuses on gym/fitness, gaming (League of Legends), and tea ceremony aesthetics. Dark feminine energy, confident but chill vibe, mix of edgy and cozy content.",
+    "visual_features": [],
+    "style_keywords": [],
+    "content_preferences": [],
+    "substitution_constraints": [],
+    "avoid": []
+  },
+  "total": 1,
+  "accepted": 1,
+  "rejected": 0,
+  "accepted_top": [
+    {
+      "file_name": "tiktok_20260213_views53400_uid7606400084305136926.mp4",
+      "readiness": 9.0,
+      "persona_fit": 9.0,
+      "confidence": 0.95,
+      "reasons": [
+        "The gym setting is a perfect match for the persona's fitness content.",
+        "The subject is the clear focus of the video with minimal background distractions.",
+        "The face is clearly visible throughout the clip, allowing for high-quality replacement.",
+        "The motion is consistent and predictable, which is ideal for stable face tracking."
+      ],
+      "json_path": "/root/workspace/comfyui-agent/shared/influencers/emi2souls/pipeline_runs/20260313_144946/tiktok/vlm/tiktok_20260213_views53400_uid7606400084305136926_162695bc31.json"
+    }
+  ]
+}
