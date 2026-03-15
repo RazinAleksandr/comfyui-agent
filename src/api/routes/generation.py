@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +19,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/generation", tags=["generation"])
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+# --- Generation manifest persistence ---
+
+
+def _save_generation_manifest(reference_video: str, job_id: str) -> None:
+    """Persist a generation job entry to generation_manifest.json in the run directory.
+
+    The run directory is found by walking up from the reference_video path:
+    .../run_dir/platform/selected/video.mp4 -> run_dir is parent of parent of selected/.
+    """
+    video_p = Path(reference_video)
+    if video_p.parent.name != "selected":
+        return
+    # selected/ -> platform_dir -> run_dir
+    run_dir = video_p.parent.parent.parent
+    if not run_dir.is_dir():
+        return
+
+    manifest_path = run_dir / "generation_manifest.json"
+    try:
+        data: dict = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+
+    jobs: list[dict] = data.get("jobs", [])
+    jobs.append({
+        "file_name": video_p.name,
+        "job_id": job_id,
+        "started_at": datetime.now(UTC).isoformat(),
+    })
+    data["jobs"] = jobs
+    manifest_path.write_text(
+        json.dumps(data, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 # --- Request / Response models ---
@@ -40,9 +78,14 @@ class ServerRequest(BaseModel):
 
 @router.get("/server/status")
 async def server_status() -> dict:
-    """Check GPU server status."""
+    """Check GPU server status, including any running startup job."""
     svc = get_vast_service()
     result = await asyncio.to_thread(svc.status)
+
+    jm = get_job_manager()
+    server_jobs = jm.find_jobs(type="server_up")
+    active = next((j for j in server_jobs if j.status in ("pending", "running")), None)
+
     return {
         "status": "running" if result.running else "offline",
         "instance_id": result.instance_id,
@@ -51,6 +94,8 @@ async def server_status() -> dict:
         "actual_status": result.actual_status,
         "dph_total": result.dph_total,
         "ssh_reachable": result.ssh_reachable,
+        "startup_job_id": active.job_id if active else None,
+        "startup_job_status": active.status if active else None,
     }
 
 
@@ -58,7 +103,7 @@ async def server_status() -> dict:
 async def server_up(body: ServerRequest) -> dict:
     """Start the GPU server. Returns job_id (long-running)."""
     jm = get_job_manager()
-    job_id = jm.submit(_do_server_up, body.workflow)
+    job_id = jm.submit_tagged(_do_server_up, {"type": "server_up"}, body.workflow)
     return {"job_id": job_id}
 
 
@@ -102,8 +147,9 @@ async def start_generation(body: GenerationRequest) -> dict:
         output_dir = str(PROJECT_ROOT / "output")
 
     jm = get_job_manager()
-    job_id = jm.submit(
+    job_id = jm.submit_tagged(
         _do_generation,
+        {"type": "generation", "influencer_id": body.influencer_id},
         workflow=body.workflow,
         image_path=image_path or "",
         video_path=body.reference_video or "",
@@ -112,6 +158,14 @@ async def start_generation(body: GenerationRequest) -> dict:
         set_args=body.set_args,
         influencer_id=body.influencer_id,
     )
+
+    # Persist job to generation manifest so it survives page refreshes
+    if body.reference_video:
+        try:
+            _save_generation_manifest(body.reference_video, job_id)
+        except Exception:
+            logger.warning("Failed to save generation manifest", exc_info=True)
+
     return {"job_id": job_id}
 
 
@@ -150,6 +204,7 @@ async def _do_generation(
     output_dir: str,
     set_args: dict[str, str],
     influencer_id: str,
+    progress_fn: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run generation via VastAgentService."""
     svc = get_vast_service()
@@ -177,6 +232,7 @@ async def _do_generation(
         inputs=inputs or None,
         overrides=overrides or None,
         output_dir=output_dir,
+        progress_callback=progress_fn,
     )
 
     # Post-processing (grain, sharpness, vignette)

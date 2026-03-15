@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,6 +43,14 @@ def setup(workflow: str, skip_models: bool):
 
     print("\n=== Installing Custom Nodes ===")
     install_custom_nodes(config)
+
+    # Re-install extra_pip after custom nodes to ensure GPU packages
+    # override any CPU-only versions pulled in by node requirements
+    if config.extra_pip:
+        print("\n=== Installing GPU-accelerated packages ===")
+        for pkg in config.extra_pip:
+            print(f"  Installing {pkg}...")
+            subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=False)
 
     if not skip_models:
         print("\n=== Downloading Models ===")

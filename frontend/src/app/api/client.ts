@@ -6,6 +6,8 @@ import type {
   PipelineRunRequest,
   GenerationRequest,
   ServerStatus,
+  ReviewVideo,
+  ReviewData,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -69,10 +71,28 @@ export const api = {
       `/parser/runs/${encodeURIComponent(runId)}?influencer_id=${encodeURIComponent(influencerId)}`,
     ),
 
+  // -- Review --
+  submitReview: (influencerId: string, runId: string, videos: ReviewVideo[]) =>
+    request<ReviewData>(
+      `/parser/runs/${encodeURIComponent(runId)}/review?influencer_id=${encodeURIComponent(influencerId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videos }),
+      },
+    ),
+
   // -- Jobs --
   getJob: (jobId: string) => request<JobInfo>(`/jobs/${encodeURIComponent(jobId)}`),
 
   listJobs: (limit = 50) => request<JobInfo[]>(`/jobs?limit=${limit}`),
+
+  activeJobs: (type?: string, influencerId?: string) => {
+    const params = new URLSearchParams();
+    if (type) params.set("type", type);
+    if (influencerId) params.set("influencer_id", influencerId);
+    return request<JobInfo[]>(`/jobs/active?${params}`);
+  },
 
   // -- Generation --
   serverStatus: () => request<ServerStatus>("/generation/server/status"),

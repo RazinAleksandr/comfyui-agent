@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -231,12 +232,41 @@ class VastAgentService:
         self._log(f"Instance ready! SSH: root@{host} -p {port}")
         return self.status()
 
+    @staticmethod
+    def _parse_progress(line: str, report: Callable[[dict], None]) -> None:
+        """Parse ComfyUI stderr lines and emit progress updates."""
+        # Match: "Executing node 42 (KSampler)..."
+        m = re.search(r"Executing node \d+ \(([^)]+)\)", line)
+        if m:
+            report({"phase": "running", "stage": "executing", "node": m.group(1)})
+            return
+
+        # Match sampling steps: "step 15/30" or "15/30" or "Step: 15/30"
+        m = re.search(r"(?:step[:\s]*)?(\d+)\s*/\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            step, total = int(m.group(1)), int(m.group(2))
+            report({
+                "phase": "running",
+                "stage": "sampling",
+                "step": step,
+                "total": total,
+                "percent": round(step / total * 100) if total > 0 else 0,
+            })
+            return
+
+        # Match percentage: "42%" or "42.5%"
+        m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+        if m:
+            report({"phase": "running", "stage": "sampling", "percent": round(float(m.group(1)))})
+            return
+
     def run(
         self,
         workflow: str,
         inputs: dict[str, Path] | None = None,
         overrides: dict[str, str] | None = None,
         output_dir: str = "output",
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> RunResult:
         """Run a workflow on the remote GPU server.
 
@@ -258,11 +288,16 @@ class VastAgentService:
         for k, v in (overrides or {}).items():
             set_args.extend(["--set", f"{k}={v}"])
 
+        def _report(data: dict) -> None:
+            if progress_callback is not None:
+                progress_callback(data)
+
         # Upload input files
         remote_input_dir = f"{self.config.remote_path}/_inputs"
         remote_paths: dict[str, str] = {}
         if input_files:
             self._log("Uploading input files...")
+            _report({"phase": "uploading", "stage": "uploading"})
             remote_paths = rsync_push_files(
                 host, port, input_files, remote_input_dir, ssh_key=key
             )
@@ -293,6 +328,7 @@ class VastAgentService:
 
         # Run via detached execution (survives SSH drops on vast.ai)
         self._log("Running workflow on remote server...")
+        _report({"phase": "running", "stage": "running"})
         run_remote_detached(
             host, port, f"PYTHONUNBUFFERED=1 {remote_cmd}", ssh_key=key
         )
@@ -308,8 +344,10 @@ class VastAgentService:
                 new_data = stderr_all[stderr_offset:]
                 stderr_offset = len(stderr_all)
                 for line in new_data.splitlines():
-                    if line.strip():
-                        self._log(line.strip())
+                    stripped = line.strip()
+                    if stripped:
+                        self._log(stripped)
+                        self._parse_progress(stripped, _report)
             exit_code = poll_remote_done(host, port, ssh_key=key)
 
         # Flush remaining stderr
@@ -335,6 +373,7 @@ class VastAgentService:
         )
 
         self._log("Downloading results...")
+        _report({"phase": "downloading", "stage": "downloading"})
         rsync_pull(host, port, f"{remote_output}/", str(local_output) + "/", ssh_key=key)
 
         # Parse JSON output, rewrite remote paths to local

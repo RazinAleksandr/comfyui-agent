@@ -9,6 +9,19 @@ from api.jobs import JobInfo
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+@router.get("/active")
+async def active_jobs(type: str | None = None, influencer_id: str | None = None) -> list[JobInfo]:
+    """Find active (pending/running) jobs, optionally filtered by tags."""
+    jm = get_job_manager()
+    filters: dict[str, str] = {}
+    if type:
+        filters["type"] = type
+    if influencer_id:
+        filters["influencer_id"] = influencer_id
+    all_matching = jm.find_jobs(**filters)
+    return [j for j in all_matching if j.status in ("pending", "running")]
+
+
 @router.get("/{job_id}")
 async def get_job(job_id: str) -> JobInfo:
     jm = get_job_manager()

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "./client";
 import { pipelineRunToTask } from "./mappers";
-import type { InfluencerOut, JobInfo, Task } from "./types";
+import type { InfluencerOut, JobInfo, PipelineRun, Task } from "./types";
 
 // ---- Generic fetch hook ----
 
@@ -73,6 +73,16 @@ export function usePipelineRun(
   return useQuery(() => {
     if (!influencerId || !runId) return Promise.reject(new Error("Missing params"));
     return api.getRun(influencerId, runId).then(pipelineRunToTask);
+  }, [influencerId, runId]);
+}
+
+export function useRawPipelineRun(
+  influencerId: string | undefined,
+  runId: string | undefined,
+): UseQueryResult<PipelineRun> {
+  return useQuery(() => {
+    if (!influencerId || !runId) return Promise.reject(new Error("Missing params"));
+    return api.getRun(influencerId, runId);
   }, [influencerId, runId]);
 }
 

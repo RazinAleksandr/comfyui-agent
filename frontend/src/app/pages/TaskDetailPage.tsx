@@ -1,11 +1,13 @@
+import { useState, useCallback, useEffect } from "react";
 import { Link, useParams } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
-import { useInfluencer, usePipelineRun } from "../api/hooks";
+import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobPoller } from "../api/hooks";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
-import type { VideoPreview } from "../api/types";
+import { api } from "../api/client";
+import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob } from "../api/types";
 import {
   ArrowLeft,
   Download,
@@ -31,6 +33,10 @@ import {
   Brain,
   Gauge,
   Shield,
+  Send,
+  Zap,
+  Server,
+  SkipForward,
 } from "lucide-react";
 import { Progress } from "../components/ui/progress";
 import { Separator } from "../components/ui/separator";
@@ -58,7 +64,7 @@ const stageDescriptions = {
   download: "Downloads actual video files via yt-dlp into the pipeline run directory",
   candidate_filter: "Deterministic pre-filtering using ffprobe - probes first 8 seconds of each video to check resolution, duration, codec quality. Ranks candidates and copies top-K to filtered/",
   vlm_scoring: "Sends each filtered video to Gemini with the influencer's persona profile. Gemini scores on 8 criteria (theme_match, persona_fit, face_visibility, motion_stability, occlusion_risk, etc.). Auto-decides accept/reject based on thresholds",
-  review: "Bot sends selected videos to you in Telegram one by one. You watch each and either type a prompt to approve or /skip to skip",
+  review: "Review VLM-approved videos. Approve or skip each video and provide generation prompts for approved ones",
   generation: "For each approved video, vast-agent uploads the reference image + video to the remote GPU and runs ComfyUI's Wan 2.2 Animate workflow: Raw \u2192 Refined \u2192 Upscaled \u2192 Postprocessed",
 };
 
@@ -237,6 +243,8 @@ function StageDetails({ details }: { details: Record<string, unknown> }) {
   if (type === "download") return <DownloadDetails details={details} />;
   if (type === "filter") return <FilterDetails details={details} />;
   if (type === "vlm") return <VlmDetails details={details} />;
+  if (type === "review") return <ReviewSummaryDetails details={details} />;
+  if (type === "generation") return <GenerationSummaryDetails details={details} />;
 
   // Fallback: generic key-value
   return (
@@ -512,6 +520,65 @@ function VlmDetails({ details }: { details: Record<string, unknown> }) {
   );
 }
 
+function ReviewSummaryDetails({ details }: { details: Record<string, unknown> }) {
+  const total = details.total as number ?? 0;
+  const approved = details.approved as number ?? 0;
+  const skipped = details.skipped as number ?? 0;
+
+  return (
+    <div className="flex gap-3 flex-wrap mb-4">
+      <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5">
+        <ThumbsUp className="w-4 h-4 text-green-600" />
+        <span className="text-sm font-semibold text-green-800">{approved} approved</span>
+      </div>
+      {skipped > 0 && (
+        <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5">
+          <SkipForward className="w-4 h-4 text-slate-500" />
+          <span className="text-sm text-slate-600">{skipped} skipped</span>
+        </div>
+      )}
+      <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2.5">
+        <FileVideo className="w-4 h-4 text-purple-600" />
+        <span className="text-sm text-purple-800">{total} total reviewed</span>
+      </div>
+    </div>
+  );
+}
+
+function GenerationSummaryDetails({ details }: { details: Record<string, unknown> }) {
+  const total = details.total as number ?? 0;
+  const completed = details.completed as number ?? 0;
+  const failed = details.failed as number ?? 0;
+  const running = details.running as number ?? 0;
+
+  return (
+    <div className="flex gap-3 flex-wrap mb-4">
+      {completed > 0 && (
+        <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5">
+          <CheckCircle2 className="w-4 h-4 text-green-600" />
+          <span className="text-sm font-semibold text-green-800">{completed} completed</span>
+        </div>
+      )}
+      {running > 0 && (
+        <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
+          <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+          <span className="text-sm font-semibold text-blue-800">{running} running</span>
+        </div>
+      )}
+      {failed > 0 && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
+          <XCircle className="w-4 h-4 text-red-500" />
+          <span className="text-sm text-red-700">{failed} failed</span>
+        </div>
+      )}
+      <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5">
+        <FileVideo className="w-4 h-4 text-slate-500" />
+        <span className="text-sm text-slate-700">{total} total jobs</span>
+      </div>
+    </div>
+  );
+}
+
 function StageVideoPreview({ videos, stageKey, totalCount }: { videos: VideoPreview[]; stageKey: string; totalCount?: number }) {
   if (!videos || videos.length === 0) return null;
 
@@ -549,10 +616,479 @@ function StageVideoPreview({ videos, stageKey, totalCount }: { videos: VideoPrev
   );
 }
 
+// --- Review Panel: interactive review UI for Stage 5 ---
+
+interface ReviewItem {
+  file_name: string;
+  thumbnail: string;
+  approved: boolean;
+  prompt: string;
+  readiness?: number;
+  persona_fit?: number;
+  confidence?: number;
+  reasons?: string[];
+}
+
+function ReviewPanel({
+  vlmVideos,
+  vlmAccepted,
+  influencerId,
+  runId,
+  onComplete,
+}: {
+  vlmVideos: VideoPreview[];
+  vlmAccepted: VlmAccepted[];
+  influencerId: string;
+  runId: string;
+  onComplete: () => void;
+}) {
+  const [items, setItems] = useState<ReviewItem[]>(() =>
+    vlmVideos.map((v) => {
+      const vlm = vlmAccepted.find((a) => a.file_name === v.id);
+      return {
+        file_name: v.id,
+        thumbnail: v.thumbnail,
+        approved: true,
+        prompt: "",
+        readiness: vlm?.readiness,
+        persona_fit: vlm?.persona_fit,
+        confidence: vlm?.confidence,
+        reasons: vlm?.reasons,
+      };
+    }),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (idx: number) => {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, approved: !it.approved } : it)));
+  };
+
+  const setPrompt = (idx: number, prompt: string) => {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, prompt } : it)));
+  };
+
+  const submit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const videos: ReviewVideo[] = items.map((it) => ({
+        file_name: it.file_name,
+        approved: it.approved,
+        prompt: it.prompt,
+      }));
+      await api.submitReview(influencerId, runId, videos);
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const approvedCount = items.filter((it) => it.approved).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-600">
+          Review each video from VLM scoring. Toggle to approve/skip and add a prompt for generation.
+        </p>
+        <Badge variant="outline" className="text-sm">
+          {approvedCount} / {items.length} approved
+        </Badge>
+      </div>
+
+      <div className="space-y-3">
+        {items.map((item, idx) => (
+          <div
+            key={item.file_name}
+            className={`flex gap-4 p-4 rounded-lg border transition-colors ${
+              item.approved ? "bg-green-50/50 border-green-200" : "bg-slate-50 border-slate-200"
+            }`}
+          >
+            {/* Thumbnail */}
+            <div className="flex-shrink-0 w-24 rounded-lg overflow-hidden" style={{ aspectRatio: "9/16" }}>
+              <MediaThumb
+                src={item.thumbnail}
+                alt={item.file_name}
+                className="w-full h-full object-cover"
+              />
+            </div>
+
+            {/* Info + controls */}
+            <div className="flex-1 min-w-0 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-mono text-sm font-medium text-slate-800 truncate">{item.file_name}</p>
+                  {item.readiness !== undefined && (
+                    <div className="flex gap-3 mt-1">
+                      <span className="text-xs text-slate-500">
+                        Readiness: <span className="font-bold text-green-700">{item.readiness}/10</span>
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        Persona Fit: <span className="font-bold text-blue-700">{item.persona_fit}/10</span>
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        Confidence: <span className="font-bold text-purple-700">{Math.round((item.confidence ?? 0) * 100)}%</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <Button
+                  variant={item.approved ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => toggle(idx)}
+                  className={item.approved ? "bg-green-600 hover:bg-green-700" : ""}
+                >
+                  {item.approved ? (
+                    <><CheckCheck className="w-3.5 h-3.5 mr-1" /> Approved</>
+                  ) : (
+                    <><SkipForward className="w-3.5 h-3.5 mr-1" /> Skipped</>
+                  )}
+                </Button>
+              </div>
+
+              {/* VLM reasons */}
+              {item.reasons && item.reasons.length > 0 && (
+                <ul className="space-y-1">
+                  {item.reasons.map((reason, j) => (
+                    <li key={j} className="flex items-start gap-1.5 text-xs text-slate-600">
+                      <CheckCircle2 className="w-3 h-3 text-green-500 mt-0.5 flex-shrink-0" />
+                      {reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Prompt input */}
+              {item.approved && (
+                <div>
+                  <input
+                    type="text"
+                    placeholder="Enter generation prompt for this video..."
+                    value={item.prompt}
+                    onChange={(e) => setPrompt(idx, e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+          <AlertCircle className="w-4 h-4" />
+          {error}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <Button onClick={submit} disabled={submitting} className="gap-2">
+          {submitting ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</>
+          ) : (
+            <><Send className="w-4 h-4" /> Submit Review ({approvedCount} approved)</>
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// --- Generation Panel: controls for Stage 6 ---
+
+function formatProgress(progress: Record<string, unknown>): string {
+  const stage = progress.stage as string | undefined;
+  if (!stage) return "";
+  if (stage === "uploading") return "Uploading files...";
+  if (stage === "downloading") return "Downloading results...";
+  if (stage === "executing") {
+    const node = progress.node as string | undefined;
+    return node ? `Executing: ${node}` : "Executing...";
+  }
+  if (stage === "sampling") {
+    const step = progress.step as number | undefined;
+    const total = progress.total as number | undefined;
+    if (step !== undefined && total !== undefined) return `Sampling: step ${step}/${total}`;
+    const pct = progress.percent as number | undefined;
+    if (pct !== undefined) return `Sampling: ${pct}%`;
+    return "Sampling...";
+  }
+  if (stage === "running") return "Running workflow...";
+  return stage;
+}
+
+function GenerationJobProgress({ jobId }: { jobId: string }) {
+  const { job } = useJobPoller(jobId);
+  if (!job) return null;
+
+  const progress = job.progress ?? {};
+  const stage = progress.stage as string | undefined;
+  const step = progress.step as number | undefined;
+  const total = progress.total as number | undefined;
+  const percent = progress.percent as number | undefined;
+  const statusText = formatProgress(progress);
+
+  const barValue =
+    step !== undefined && total !== undefined && total > 0
+      ? Math.round((step / total) * 100)
+      : percent ?? undefined;
+
+  const isDone = job.status === "completed";
+  const isFailed = job.status === "failed";
+
+  return (
+    <div className="w-full mt-1.5 space-y-1">
+      <div className="flex items-center gap-2">
+        {isDone ? (
+          <CheckCircle2 className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
+        ) : isFailed ? (
+          <XCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0" />
+        ) : (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 flex-shrink-0" />
+        )}
+        <span className={`text-xs ${isDone ? "text-green-700" : isFailed ? "text-red-600" : "text-slate-600"}`}>
+          {isDone ? "Completed" : isFailed ? (job.error ?? "Failed") : (statusText || "Running...")}
+        </span>
+      </div>
+      {!isDone && !isFailed && stage === "sampling" && barValue !== undefined && (
+        <Progress value={barValue} className="h-1.5" />
+      )}
+    </div>
+  );
+}
+
+function GenerationPanel({
+  reviewVideos,
+  influencerId,
+  selectedVideoUrls,
+  onJobStarted,
+  existingJobs,
+}: {
+  reviewVideos: ReviewVideo[];
+  influencerId: string;
+  selectedVideoUrls: Record<string, string>;
+  onJobStarted: () => void;
+  existingJobs?: GenerationJob[];
+}) {
+  const [serverState, setServerState] = useState<"unknown" | "checking" | "offline" | "starting" | "running">("unknown");
+  const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
+  const [videoJobs, setVideoJobs] = useState<Record<string, string>>(() => {
+    // Initialize from persisted generation manifest jobs
+    const initial: Record<string, string> = {};
+    for (const job of existingJobs ?? []) {
+      initial[job.file_name] = job.job_id;
+    }
+    return initial;
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [serverJobId, setServerJobId] = useState<string | null>(null);
+
+  const approvedVideos = reviewVideos.filter((v) => v.approved);
+  const { job: serverJob } = useJobPoller(serverJobId);
+
+  // When server startup job completes, update state
+  if (serverJob?.status === "completed" && serverState === "starting") {
+    setServerState("running");
+    setServerJobId(null);
+  }
+
+  // Auto-check server status on mount — also restore running startup job
+  useEffect(() => {
+    api.serverStatus().then((s) => {
+      if (s.startup_job_id && s.startup_job_status && ["pending", "running"].includes(s.startup_job_status)) {
+        // Server startup job is still running — poll it
+        setServerState("starting");
+        setServerJobId(s.startup_job_id);
+      } else if (s.status === "running") {
+        setServerState("running");
+      } else {
+        setServerState("offline");
+      }
+    }).catch(() => setServerState("offline"));
+  }, []);
+
+  const checkAndStartServer = async () => {
+    setError(null);
+    setServerState("checking");
+    try {
+      const status = await api.serverStatus();
+      if (status.status === "running") {
+        setServerState("running");
+      } else {
+        setServerState("starting");
+        const { job_id } = await api.serverUp();
+        setServerJobId(job_id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setServerState("offline");
+    }
+  };
+
+  const runGeneration = async (video: ReviewVideo, idx: number) => {
+    setGeneratingIdx(idx);
+    setError(null);
+    try {
+      const videoPath = selectedVideoUrls[video.file_name] || video.file_name;
+      const { job_id } = await api.startGeneration({
+        influencer_id: influencerId,
+        reference_video: videoPath,
+        prompt: video.prompt,
+      });
+      setVideoJobs((prev) => ({ ...prev, [video.file_name]: job_id }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingIdx(null);
+    }
+  };
+
+  const runAll = async () => {
+    for (let i = 0; i < approvedVideos.length; i++) {
+      await runGeneration(approvedVideos[i], i);
+    }
+    // Only refetch after ALL generations are submitted
+    onJobStarted();
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Server status */}
+      <div className="flex items-center gap-3">
+        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border ${
+          serverState === "running"
+            ? "bg-green-50 border-green-200"
+            : serverState === "starting" || serverState === "checking"
+              ? "bg-blue-50 border-blue-200"
+              : "bg-slate-50 border-slate-200"
+        }`}>
+          <Server className={`w-4 h-4 ${
+            serverState === "running" ? "text-green-600" :
+            serverState === "starting" ? "text-blue-600" : "text-slate-500"
+          }`} />
+          <span className="text-sm font-medium">
+            {serverState === "unknown" && "GPU Server: Check status to begin"}
+            {serverState === "checking" && "Checking server..."}
+            {serverState === "offline" && "GPU Server: Offline"}
+            {serverState === "starting" && "GPU Server: Starting up..."}
+            {serverState === "running" && "GPU Server: Running"}
+          </span>
+          {serverState === "starting" && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
+        </div>
+
+        {(serverState === "unknown" || serverState === "offline") && (
+          <Button onClick={checkAndStartServer} variant="outline" size="sm" className="gap-2">
+            <Zap className="w-3.5 h-3.5" />
+            {serverState === "offline" ? "Start Server" : "Check & Start"}
+          </Button>
+        )}
+      </div>
+
+      {/* Approved videos for generation */}
+      {serverState === "running" && (
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-600">
+              {approvedVideos.length} approved videos ready for generation
+            </p>
+            <Button onClick={runAll} disabled={generatingIdx !== null} className="gap-2">
+              <Zap className="w-4 h-4" />
+              Generate All
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            {approvedVideos.map((video, idx) => {
+              const jobId = videoJobs[video.file_name];
+              const isGenerating = generatingIdx === idx;
+              const hasJob = !!jobId;
+              // Check persisted status from existingJobs for jobs lost on restart
+              const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
+              // If local videoJobs has a different job_id than existingJobs, it's a retry — treat as running
+              const isRetried = hasJob && existingJob && jobId !== existingJob.job_id;
+              const persistedStatus = isRetried ? "running" : existingJob?.status;
+              const isDeadJob = hasJob && !persistedStatus && !isRetried;
+              const isFailedJob = !isRetried && (persistedStatus === "failed" || persistedStatus === "unknown" || isDeadJob);
+              const isCompletedJob = !isRetried && persistedStatus === "completed";
+              const isRunningJob = isRetried || (hasJob && (persistedStatus === "running" || persistedStatus === "pending"));
+
+              return (
+                <div key={video.file_name} className={`flex items-center gap-3 p-3 rounded-lg border bg-white ${
+                  isCompletedJob ? "border-green-200" : isFailedJob ? "border-red-200" : "border-slate-200"
+                }`}>
+                  <FileVideo className={`w-4 h-4 flex-shrink-0 ${
+                    isCompletedJob ? "text-green-600" : isFailedJob ? "text-red-500" : "text-purple-600"
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-mono truncate">{video.file_name}</p>
+                    {video.prompt && (
+                      <p className="text-xs text-slate-500 truncate italic">"{video.prompt}"</p>
+                    )}
+                    {isRunningJob && <GenerationJobProgress jobId={jobId} />}
+                  </div>
+                  {isCompletedJob ? (
+                    <Badge className="bg-green-100 text-green-800 border-green-200 flex-shrink-0">
+                      <CheckCircle2 className="w-3 h-3 mr-1" /> Done
+                    </Badge>
+                  ) : isFailedJob ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-red-600 border-red-200 hover:bg-red-50"
+                      onClick={() => runGeneration(video, idx)}
+                      disabled={generatingIdx !== null}
+                    >
+                      <XCircle className="w-3.5 h-3.5 mr-1" /> Retry
+                    </Button>
+                  ) : isRunningJob ? (
+                    <Badge className="bg-blue-100 text-blue-800 border-blue-200 flex-shrink-0">
+                      <Loader2 className="w-3 h-3 animate-spin mr-1" /> Running
+                    </Badge>
+                  ) : isGenerating ? (
+                    <Badge className="bg-blue-100 text-blue-800 border-blue-200 flex-shrink-0">
+                      <Loader2 className="w-3 h-3 animate-spin mr-1" /> Submitting...
+                    </Badge>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => runGeneration(video, idx)}
+                      disabled={generatingIdx !== null}
+                    >
+                      Generate
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+          <AlertCircle className="w-4 h-4" />
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TaskDetailPage() {
   const { avatarId, runId } = useParams();
-  const { data: task, loading: loadingTask } = usePipelineRun(avatarId, runId);
+  const { data: task, loading: loadingTask, refetch: refetchTask } = usePipelineRun(avatarId, runId);
+  const { data: rawRun, refetch: refetchRaw } = useRawPipelineRun(avatarId, runId);
   const { data: influencer, loading: loadingInf } = useInfluencer(avatarId);
+
+  const refetchAll = useCallback(() => {
+    refetchTask();
+    refetchRaw();
+  }, [refetchTask, refetchRaw]);
 
   if (loadingTask || loadingInf) {
     return (
@@ -743,12 +1279,47 @@ export default function TaskDetailPage() {
                       </>
                     )}
 
-                    {stage.status === "pending" && (
+                    {/* Review panel: show interactive UI when VLM is done but review is pending */}
+                    {key === "review" && stage.status === "pending" && task.stages.vlm_scoring.status === "completed" && (
+                      <ReviewPanel
+                        vlmVideos={task.stages.vlm_scoring.videos ?? []}
+                        vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
+                        influencerId={avatarId!}
+                        runId={runId!}
+                        onComplete={refetchAll}
+                      />
+                    )}
+
+                    {/* Generation panel: show controls when review is completed */}
+                    {key === "generation" && task.stages.review.status === "completed" && rawRun?.review?.videos && (
+                      <GenerationPanel
+                        reviewVideos={rawRun.review.videos}
+                        influencerId={avatarId!}
+                        selectedVideoUrls={
+                          Object.fromEntries(
+                            (rawRun?.platforms ?? []).flatMap((p) => {
+                              const dir = p.selected_dir || "";
+                              return (p.selected_videos ?? []).map((v) => [
+                                v.file_name,
+                                dir ? `${dir}/${v.file_name}` : v.file_name,
+                              ]);
+                            })
+                          )
+                        }
+                        onJobStarted={refetchAll}
+                        existingJobs={rawRun?.generation?.jobs}
+                      />
+                    )}
+
+                    {stage.status === "pending" && !(
+                      (key === "review" && task.stages.vlm_scoring.status === "completed") ||
+                      (key === "generation" && task.stages.review.status === "completed")
+                    ) && (
                       <div className="bg-slate-50 rounded-lg p-6 text-center">
                         <AlertCircle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
                         <p className="text-slate-500">
                           {key === "review"
-                            ? "Awaiting human review via Telegram bot"
+                            ? "Review will be available after VLM scoring completes"
                             : key === "generation"
                               ? "Generation will start after review is complete"
                               : "This stage is pending and will start after previous stages complete"}

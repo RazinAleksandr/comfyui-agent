@@ -80,6 +80,30 @@ export interface PipelinePlatformRun {
   ingested_details?: IngestedDetail[];
 }
 
+export interface ReviewVideo {
+  file_name: string;
+  approved: boolean;
+  prompt: string;
+}
+
+export interface ReviewData {
+  completed: boolean;
+  videos: ReviewVideo[];
+}
+
+export interface GenerationJob {
+  file_name: string;
+  job_id: string;
+  started_at: string;
+  status?: string;
+  progress?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface GenerationData {
+  jobs: GenerationJob[];
+}
+
 export interface PipelineRun {
   run_id: string; // injected by store layer, not in Pydantic model
   influencer_id: string;
@@ -87,6 +111,8 @@ export interface PipelineRun {
   base_dir: string;
   platforms: PipelinePlatformRun[];
   request?: Record<string, unknown>;
+  review?: ReviewData;
+  generation?: GenerationData;
 }
 
 export interface PlatformPipelineConfig {
@@ -121,6 +147,8 @@ export interface ServerStatus {
   dph_total: number | null;
   ssh_reachable: boolean | null;
   actual_status: string | null;
+  startup_job_id: string | null;
+  startup_job_status: string | null;
 }
 
 // ---- Presentation types (used by page components) ----

@@ -1,4 +1,4 @@
-import type { PipelineRun, Task, StageResult, VideoPreview, IngestedDetail, VlmAccepted } from "./types";
+import type { PipelineRun, Task, StageResult, VideoPreview, IngestedDetail, VlmAccepted, ReviewVideo } from "./types";
 
 /**
  * Convert a backend PipelineRun manifest (enriched) into the frontend Task shape
@@ -180,22 +180,71 @@ export function pipelineRunToTask(run: PipelineRun): Task {
       ? { status: "in-progress" }
       : { status: "pending" };
 
-  // -- Stage 5: Review (Telegram) --
-  const hasSelected = run.platforms.some(
-    (p) => p.selected_videos && p.selected_videos.length > 0,
-  );
-  const review: StageResult = hasSelected
+  // -- Stage 5: Review --
+  const reviewData = run.review;
+  const reviewCompleted = reviewData?.completed === true;
+  const reviewVideos: VideoPreview[] = [];
+
+  if (reviewCompleted && reviewData.videos) {
+    for (const rv of reviewData.videos) {
+      // Find the matching VLM video for thumbnail
+      const vlmV = vlmVideos.find((v) => v.id === rv.file_name);
+      reviewVideos.push({
+        id: rv.file_name,
+        thumbnail: vlmV?.thumbnail ?? "",
+        title: rv.file_name,
+        approved: rv.approved,
+        prompt: rv.prompt || undefined,
+        score: vlmV?.score,
+      });
+    }
+  }
+
+  const approvedCount = reviewData?.videos?.filter((v: ReviewVideo) => v.approved).length ?? 0;
+  const review: StageResult = reviewCompleted
     ? {
         status: "completed",
-        items_count: totalAccepted,
-        videos: vlmVideos.length > 0 ? vlmVideos : undefined,
+        items_count: approvedCount,
+        details: {
+          _type: "review",
+          total: reviewData.videos.length,
+          approved: approvedCount,
+          skipped: reviewData.videos.length - approvedCount,
+        },
+        videos: reviewVideos.length > 0 ? reviewVideos : undefined,
       }
     : hasVlm
       ? { status: "pending" }
       : { status: "pending" };
 
   // -- Stage 6: Generation --
-  const generation: StageResult = { status: "pending" };
+  const genJobs = run.generation?.jobs ?? [];
+  let generation: StageResult;
+  if (genJobs.length > 0) {
+    // Jobs without a status (lost on server restart) are treated as "failed" (unknown)
+    const jobStatuses = genJobs.map((j) => j.status || "unknown");
+    const allCompleted = jobStatuses.every((s) => s === "completed");
+    const anyRunning = jobStatuses.some((s) => s === "running" || s === "pending");
+    const anyFailed = jobStatuses.some((s) => s === "failed" || s === "unknown");
+    const genStatus = allCompleted ? "completed" : anyRunning ? "in-progress" : anyFailed ? "failed" : "pending";
+
+    const completedCount = jobStatuses.filter((s) => s === "completed").length;
+    const failedCount = jobStatuses.filter((s) => s === "failed" || s === "unknown").length;
+
+    generation = {
+      status: genStatus,
+      items_count: genJobs.length,
+      details: {
+        _type: "generation",
+        total: genJobs.length,
+        completed: completedCount,
+        failed: failedCount,
+        running: jobStatuses.filter((s) => s === "running").length,
+      },
+    };
+  } else {
+    generation = reviewCompleted ? { status: "pending" } : { status: "pending" };
+  }
 
   // -- Overall task status --
   const pipelineStages = [trend_ingestion, download, candidate_filter, vlm_scoring];

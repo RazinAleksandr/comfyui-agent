@@ -28,6 +28,16 @@ class ParseRequest(BaseModel):
     selectors: dict[str, dict] | None = None
 
 
+class ReviewVideoItem(BaseModel):
+    file_name: str
+    approved: bool
+    prompt: str = ""
+
+
+class ReviewSubmission(BaseModel):
+    videos: list[ReviewVideoItem]
+
+
 # --- Routes ---
 
 
@@ -35,7 +45,7 @@ class ParseRequest(BaseModel):
 async def start_parse(body: ParseRequest) -> dict:
     """Start a trend parsing job. Returns a job_id for polling."""
     jm = get_job_manager()
-    job_id = jm.submit(_run_parse, body)
+    job_id = jm.submit_tagged(_run_parse, {"type": "parse"}, body)
     return {"job_id": job_id}
 
 
@@ -43,7 +53,11 @@ async def start_parse(body: ParseRequest) -> dict:
 async def start_pipeline(body: PipelineRunRequest) -> dict:
     """Start the full pipeline (ingest -> download -> filter -> VLM). Returns job_id."""
     jm = get_job_manager()
-    job_id = jm.submit(_run_pipeline, body)
+    job_id = jm.submit_tagged(
+        _run_pipeline,
+        {"type": "pipeline", "influencer_id": body.influencer_id},
+        body,
+    )
     return {"job_id": job_id}
 
 
@@ -63,6 +77,27 @@ async def get_run(influencer_id: str, run_id: str) -> dict:
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return _enrich_run(run, store.data_dir)
+
+
+@router.post("/runs/{run_id}/review")
+async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission) -> dict:
+    """Submit human review decisions for a pipeline run."""
+    store = get_store()
+    run = store.load_pipeline_run(influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    review_path = (
+        store.influencer_pipeline_runs_dir(influencer_id) / run_id / "review_manifest.json"
+    )
+    manifest = {
+        "completed": True,
+        "videos": [v.model_dump() for v in body.videos],
+    }
+    review_path.write_text(
+        json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
+    return manifest
 
 
 @router.post("/signals")
@@ -133,6 +168,27 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
 
 def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Enrich a pipeline run manifest with video lists and sub-report data."""
+    # Load review manifest (lives at run level, not per-platform)
+    base_dir = run.get("base_dir", "")
+    if base_dir:
+        review_path = Path(base_dir) / "review_manifest.json"
+        review = _load_json(str(review_path))
+        if review:
+            run["review"] = review
+
+        # Load generation manifest and enrich with live job status
+        gen_path = Path(base_dir) / "generation_manifest.json"
+        gen_data = _load_json(str(gen_path))
+        if gen_data:
+            jm = get_job_manager()
+            for entry in gen_data.get("jobs", []):
+                job_info = jm.get(entry.get("job_id", ""))
+                if job_info:
+                    entry["status"] = job_info.status
+                    entry["progress"] = job_info.progress
+                    entry["error"] = job_info.error
+            run["generation"] = gen_data
+
     for plat in run.get("platforms", []):
         base_dir = run.get("base_dir", "")
         platform_name = plat.get("platform", "")

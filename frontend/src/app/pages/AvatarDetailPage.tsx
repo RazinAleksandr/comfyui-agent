@@ -95,15 +95,31 @@ export default function AvatarDetailPage() {
 
   const [pipelineDialogOpen, setPipelineDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [completedJobStatus, setCompletedJobStatus] = useState<string | null>(null);
   const { job, isComplete: jobDone } = useJobPoller(activeJobId);
 
-  // When job completes, refetch tasks and clear the active job
+  // On mount, restore any active pipeline job for this influencer
   useEffect(() => {
-    if (jobDone && activeJobId) {
-      setActiveJobId(null);
+    if (!avatarId) return;
+    api.activeJobs("pipeline", avatarId).then((jobs) => {
+      if (jobs.length > 0) {
+        setActiveJobId(jobs[0].job_id);
+      }
+    }).catch(() => {});
+  }, [avatarId]);
+
+  // When job completes, show result briefly, refetch, then clear
+  useEffect(() => {
+    if (jobDone && activeJobId && job) {
+      setCompletedJobStatus(job.status === "failed" ? "failed" : "completed");
       refetchTasks();
+      const timer = setTimeout(() => {
+        setActiveJobId(null);
+        setCompletedJobStatus(null);
+      }, 3000);
+      return () => clearTimeout(timer);
     }
-  }, [jobDone, activeJobId, refetchTasks]);
+  }, [jobDone, activeJobId, job, refetchTasks]);
 
   if (loadingInf) {
     return (
@@ -261,24 +277,40 @@ export default function AvatarDetailPage() {
         <Separator className="mb-6" />
 
         {/* Active job banner */}
-        {activeJobId && job && (
+        {(activeJobId || completedJobStatus) && (
           <div className={`mb-4 p-4 rounded-lg border flex items-center gap-3 ${
-            job.status === "failed"
+            completedJobStatus === "failed" || job?.status === "failed"
               ? "bg-red-50 border-red-200"
-              : "bg-blue-50 border-blue-200"
+              : completedJobStatus === "completed"
+                ? "bg-green-50 border-green-200"
+                : "bg-blue-50 border-blue-200"
           }`}>
-            {job.status === "failed" ? (
+            {completedJobStatus === "failed" || job?.status === "failed" ? (
               <XCircle className="w-5 h-5 text-red-600" />
+            ) : completedJobStatus === "completed" ? (
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
             ) : (
               <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
             )}
             <div>
-              <p className={`font-medium ${job.status === "failed" ? "text-red-900" : "text-blue-900"}`}>
-                {job.status === "failed" ? "Pipeline failed" : "Pipeline running..."}
+              <p className={`font-medium ${
+                completedJobStatus === "failed" || job?.status === "failed" ? "text-red-900"
+                  : completedJobStatus === "completed" ? "text-green-900"
+                  : "text-blue-900"
+              }`}>
+                {completedJobStatus === "failed" || job?.status === "failed"
+                  ? "Pipeline failed"
+                  : completedJobStatus === "completed"
+                    ? "Pipeline completed!"
+                    : "Pipeline running..."}
               </p>
-              <p className={`text-sm ${job.status === "failed" ? "text-red-700" : "text-blue-700"}`}>
-                Job {activeJobId} &mdash; {job.status}
-                {job.error && `: ${job.error}`}
+              <p className={`text-sm ${
+                completedJobStatus === "failed" || job?.status === "failed" ? "text-red-700"
+                  : completedJobStatus === "completed" ? "text-green-700"
+                  : "text-blue-700"
+              }`}>
+                {job?.status ?? completedJobStatus}
+                {job?.error && `: ${job.error}`}
               </p>
             </div>
           </div>
@@ -398,10 +430,10 @@ function StartPipelineDialog({
 
       const platforms: Record<string, { source: string; limit: number; selector?: { hashtags: string[] } }> = {};
       if (tiktok) {
-        platforms.tiktok = { source: "seed", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
+        platforms.tiktok = { source: "tiktok_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
       }
       if (instagram) {
-        platforms.instagram = { source: "apify", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
+        platforms.instagram = { source: "instagram_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
       }
 
       if (Object.keys(platforms).length === 0) {
