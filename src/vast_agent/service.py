@@ -140,6 +140,9 @@ class VastAgentService:
             instance = client.get_instance(instance_id)
         except (VastAPIError, Exception) as exc:
             logger.warning("Could not query instance %s: %s", instance_id, exc)
+            # Instance likely destroyed — clean up stale state file
+            if "not found" in str(exc).lower():
+                self.state_file.unlink(missing_ok=True)
             return ServerStatus(
                 running=False,
                 instance_id=instance_id,

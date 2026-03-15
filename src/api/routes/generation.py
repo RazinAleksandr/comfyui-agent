@@ -45,6 +45,8 @@ def _save_generation_manifest(reference_video: str, job_id: str) -> None:
         data = {}
 
     jobs: list[dict] = data.get("jobs", [])
+    # Remove any previous jobs for the same file (retry replaces old entry)
+    jobs = [j for j in jobs if j.get("file_name") != video_p.name]
     jobs.append({
         "file_name": video_p.name,
         "job_id": job_id,

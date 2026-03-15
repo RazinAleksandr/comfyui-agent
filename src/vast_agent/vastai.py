@@ -152,6 +152,9 @@ class VastClient:
         """Get details of a specific instance."""
         data = self._request("GET", f"/api/v0/instances/{instance_id}/")
 
+        if not data or not isinstance(data, dict):
+            raise VastAPIError(f"Instance {instance_id} not found (empty response)")
+
         # API may return {"instances": {...}} or the instance directly
         info = data.get("instances", data)
         if isinstance(info, list):
