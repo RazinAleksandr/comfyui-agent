@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -150,10 +151,16 @@ class FilesystemStore:
         return manifest_path
 
 
+_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def _validate_id(value: str) -> None:
-    """Reject path traversal attempts in identifiers."""
-    if not value or ".." in value or "/" in value or "\\" in value or "\0" in value:
-        raise ValueError(f"Invalid identifier: {value!r}")
+    """Reject path traversal attempts and special characters in identifiers."""
+    if not value or len(value) > 255 or not _ID_PATTERN.match(value):
+        raise ValueError(
+            f"Invalid identifier: {value!r}. "
+            "ID must contain only alphanumeric characters, hyphens, and underscores"
+        )
 
 
 def _stable_id(value: str) -> int:

@@ -205,7 +205,7 @@ export interface VideoPreview {
 }
 
 export interface StageResult {
-  status: "completed" | "in-progress" | "pending" | "failed";
+  status: "completed" | "in-progress" | "pending" | "failed" | "lost";
   items_count?: number;
   duration?: string;
   details?: Record<string, unknown>;
@@ -216,7 +216,7 @@ export interface Task {
   id: string;
   influencer_id: string;
   created_at: string;
-  status: "in-progress" | "completed" | "failed";
+  status: "pending" | "in-progress" | "completed" | "failed" | "lost";
   stages: {
     trend_ingestion: StageResult;
     download: StageResult;

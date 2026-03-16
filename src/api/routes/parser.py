@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from api.deps import get_config, get_job_manager, get_seed_dir, get_store
 from trend_parser.ingest import TrendIngestService
 from trend_parser.runner import PipelineRunnerService
 from trend_parser.schemas import PipelineRunRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/parser", tags=["parser"])
 
@@ -143,7 +146,8 @@ def _fs_to_url(abs_path: str, data_dir: Path) -> str:
         rel = Path(abs_path).relative_to(data_dir)
         return f"/files/{rel}"
     except ValueError:
-        return abs_path
+        logger.warning("Path outside data_dir, refusing to expose: %s", abs_path)
+        return ""
 
 
 def _list_videos(directory: str | None, data_dir: Path) -> list[dict[str, str]]:
@@ -171,7 +175,8 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to load JSON from %s: %s", p, exc)
         return None
 
 
@@ -205,6 +210,16 @@ def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                                 for p in result.get("outputs", [])
                                 if Path(p).exists()
                             ]
+                # Also convert manifest-persisted outputs (from previous runs
+                # or recovered jobs) to URL format if not already done.
+                if not job_info and entry.get("outputs"):
+                    raw_outputs = entry["outputs"]
+                    if raw_outputs and isinstance(raw_outputs[0], str):
+                        entry["outputs"] = [
+                            {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
+                            for p in raw_outputs
+                            if Path(p).exists()
+                        ]
             run["generation"] = gen_data
 
     for plat in run.get("platforms", []):

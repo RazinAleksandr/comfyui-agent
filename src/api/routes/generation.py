@@ -27,14 +27,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 def _save_generation_manifest(reference_video: str, job_id: str) -> None:
     """Persist a generation job entry to generation_manifest.json in the run directory.
 
-    The run directory is found by walking up from the reference_video path:
-    .../run_dir/platform/selected/video.mp4 -> run_dir is parent of parent of selected/.
+    The run directory is found by walking up from the reference_video path.
+    Expected layout: .../run_dir/platform/selected/video.mp4
+    For non-standard paths, we look for a parent containing 'run_manifest.json'.
     """
     video_p = Path(reference_video)
-    if video_p.parent.name != "selected":
-        return
-    # selected/ -> platform_dir -> run_dir
-    run_dir = video_p.parent.parent.parent
+    if video_p.parent.name == "selected":
+        # selected/ -> platform_dir -> run_dir
+        run_dir = video_p.parent.parent.parent
+    else:
+        logger.warning(
+            "Reference video not in 'selected/' directory: %s — "
+            "searching parent directories for run_manifest.json",
+            reference_video,
+        )
+        # Walk up to find the run directory (contains run_manifest.json)
+        run_dir = None
+        for parent in video_p.parents:
+            if (parent / "run_manifest.json").is_file():
+                run_dir = parent
+                break
+        if run_dir is None:
+            logger.warning("Could not locate run directory for %s", reference_video)
+            return
     if not run_dir.is_dir():
         return
 
@@ -45,8 +60,24 @@ def _save_generation_manifest(reference_video: str, job_id: str) -> None:
         data = {}
 
     jobs: list[dict] = data.get("jobs", [])
-    # Remove any previous jobs for the same file (retry replaces old entry)
-    jobs = [j for j in jobs if j.get("file_name") != video_p.name]
+    # Remove previous jobs for the same file — but only if they are not still
+    # actively running (avoid orphaning a job that holds the server lock).
+    jm = get_job_manager()
+    kept: list[dict] = []
+    for j in jobs:
+        if j.get("file_name") != video_p.name:
+            kept.append(j)
+            continue
+        # Same file — only keep if the old job is still actively running
+        old_info = jm.get(j.get("job_id", ""))
+        if old_info and old_info.status in ("pending", "running"):
+            logger.info(
+                "Skipping manifest replacement for %s — old job %s still %s",
+                video_p.name, j.get("job_id"), old_info.status,
+            )
+            return  # Don't add duplicate; the old job is still alive
+        # Old job is terminal or unknown — safe to replace
+    jobs = kept
     jobs.append({
         "file_name": video_p.name,
         "job_id": job_id,
@@ -168,8 +199,9 @@ async def shutdown_server(server_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Server not found")
     try:
         await asyncio.to_thread(manager.shutdown_server, server_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        logger.error("Failed to shut down server %s", server_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to shut down server")
     return {"status": "destroyed"}
 
 
@@ -190,8 +222,9 @@ async def server_down() -> dict:
     svc = get_vast_service()
     try:
         await asyncio.to_thread(svc.down)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        logger.error("Failed to shut down GPU server", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to shut down server")
     return {"status": "destroyed"}
 
 

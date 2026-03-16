@@ -97,13 +97,33 @@ class ServerManager:
     # Health check — verify registry against VastAI API
     # ------------------------------------------------------------------
 
+    def _safe_remove_server(self, server_id: str) -> None:
+        """Remove a server from registry and clean up state file.
+
+        Handles the case where another thread already removed the server
+        between listing and removal (race condition).
+        """
+        try:
+            self._registry.remove_server(server_id)
+        except Exception as exc:
+            logger.debug("Server %s already removed from registry: %s", server_id, exc)
+        self._services.pop(server_id, None)
+        state_file = self._project_root / f".vast-server-{server_id}.json"
+        state_file.unlink(missing_ok=True)
+
     def verify_servers(self) -> list[str]:
         """Verify all registry entries against VastAI.
 
         Removes servers whose VastAI instances no longer exist.
         Returns list of removed server IDs.
+
+        Uses a snapshot of the server list. Individual removals are
+        guarded against concurrent modifications by the registry lock
+        and by catching KeyError if another thread already removed
+        the entry.
         """
         removed = []
+        # Take a snapshot — the registry may be modified concurrently.
         servers = self._registry.list_servers()
         for sid, entry in list(servers.items()):
             # Never remove servers created within the last 15 minutes — they may be booting
@@ -119,10 +139,7 @@ class ServerManager:
 
             if not entry.instance_id:
                 # No instance ID and older than 15 min — leftover placeholder, remove
-                self._registry.remove_server(sid)
-                self._services.pop(sid, None)
-                state_file = self._project_root / f".vast-server-{sid}.json"
-                state_file.unlink(missing_ok=True)
+                self._safe_remove_server(sid)
                 removed.append(sid)
                 continue
 
@@ -153,10 +170,7 @@ class ServerManager:
                         "Server %s (instance %s) is gone, removing from registry",
                         sid, entry.instance_id,
                     )
-                    self._registry.remove_server(sid)
-                    self._services.pop(sid, None)
-                    state_file = self._project_root / f".vast-server-{sid}.json"
-                    state_file.unlink(missing_ok=True)
+                    self._safe_remove_server(sid)
                     removed.append(sid)
                 elif not status.running and status.actual_status:
                     logger.info(
@@ -168,10 +182,7 @@ class ServerManager:
                     logger.info("Server %s query failed but has active job, keeping: %s", sid, exc)
                 else:
                     logger.warning("Failed to check server %s: %s — removing", sid, exc)
-                    self._registry.remove_server(sid)
-                    self._services.pop(sid, None)
-                    state_file = self._project_root / f".vast-server-{sid}.json"
-                    state_file.unlink(missing_ok=True)
+                    self._safe_remove_server(sid)
                     removed.append(sid)
 
         if removed:

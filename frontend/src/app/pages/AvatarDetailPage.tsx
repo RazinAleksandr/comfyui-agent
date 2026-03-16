@@ -61,7 +61,7 @@ const stageDescriptions = {
   download: "Downloads video files via yt-dlp into pipeline directory",
   candidate_filter: "Deterministic pre-filtering using ffprobe for quality checks",
   vlm_scoring: "Gemini AI scores videos on 8 criteria for persona match",
-  review: "Human review via Telegram bot for final approval",
+  review: "Human review in web UI — approve or skip videos and add generation prompts",
   generation: "ComfyUI's Wan 2.2 Animate workflow generates final content",
 };
 
@@ -73,6 +73,8 @@ function getStatusIcon(status: string) {
       return <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />;
     case "failed":
       return <XCircle className="w-5 h-5 text-red-600" />;
+    case "lost":
+      return <Circle className="w-5 h-5 text-amber-500" />;
     default:
       return <Circle className="w-5 h-5 text-slate-300" />;
   }
@@ -86,6 +88,8 @@ function getStatusColor(status: string) {
       return "bg-blue-100 text-blue-800";
     case "failed":
       return "bg-red-100 text-red-800";
+    case "lost":
+      return "bg-amber-100 text-amber-800";
     default:
       return "bg-slate-100 text-slate-600";
   }
@@ -653,10 +657,14 @@ function StartPipelineDialog({
   const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
 
   // Load default sources from config
+  const [defaultsError, setDefaultsError] = useState(false);
   useEffect(() => {
     api.getParserDefaults().then((d) => {
       setDefaultSources(d.default_sources);
-    }).catch(() => {});
+      setDefaultsError(false);
+    }).catch(() => {
+      setDefaultsError(true);
+    });
   }, []);
 
   const handleSubmit = useCallback(
@@ -731,6 +739,9 @@ function StartPipelineDialog({
           <Label htmlFor="hashtags">Hashtags (comma-separated)</Label>
           <Input id="hashtags" name="hashtags" defaultValue={defaultHashtags.join(", ")} />
         </div>
+        {defaultsError && (
+          <p className="text-sm text-amber-600">Could not load pipeline defaults — using fallback values.</p>
+        )}
         {error && <p className="text-sm text-red-600">{error}</p>}
         <DialogFooter>
           <Button type="submit" disabled={submitting}>

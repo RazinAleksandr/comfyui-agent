@@ -78,6 +78,8 @@ function getStatusIcon(status: string, size = "w-5 h-5") {
       return <Loader2 className={`${size} text-blue-600 animate-spin`} />;
     case "failed":
       return <XCircle className={`${size} text-red-600`} />;
+    case "lost":
+      return <Circle className={`${size} text-amber-500`} />;
     default:
       return <Circle className={`${size} text-slate-300`} />;
   }
@@ -91,6 +93,8 @@ function getStatusColor(status: string) {
       return "bg-blue-100 text-blue-800 border-blue-200";
     case "failed":
       return "bg-red-100 text-red-800 border-red-200";
+    case "lost":
+      return "bg-amber-100 text-amber-800 border-amber-200";
     default:
       return "bg-slate-100 text-slate-600 border-slate-200";
   }
@@ -131,8 +135,8 @@ function VideoPlayerModal({
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="font-mono text-xs truncate">{filename}</DialogDescription>
+          <DialogTitle>Video Preview</DialogTitle>
+          <DialogDescription className="font-mono text-xs truncate">{title}</DialogDescription>
         </DialogHeader>
         <video
           ref={videoRef}
@@ -163,8 +167,12 @@ function MediaThumb({ src, alt, className }: { src: string; alt: string; classNa
         className={className}
         onLoadedData={(e) => {
           // Seek to 1s for a better thumbnail frame
-          const el = e.currentTarget;
-          if (el.duration > 1) el.currentTime = 1;
+          try {
+            const el = e.currentTarget;
+            if (el.duration > 1) el.currentTime = 1;
+          } catch {
+            // Some video formats don't support seeking
+          }
         }}
       />
     );
@@ -235,46 +243,51 @@ function VideoCard({ video, stageKey, onPlay }: { video: VideoPreview; stageKey:
 
 function GenerationVideoCard({ video, onPlay }: { video: VideoPreview; onPlay?: (url: string, title: string) => void }) {
   const steps = video.generation_steps;
-  const stepLabels = ["Raw", "Refined", "Upscaled", "Post"];
-  const stepThumbs = steps ? [steps.raw, steps.refined, steps.upscaled, steps.postprocessed] : [];
+  const stepColorByIdx = ["bg-slate-600", "bg-blue-600", "bg-purple-600", "bg-green-600"];
+  const stepThumbs = steps
+    ? [
+        { thumb: steps.raw, label: "Raw", idx: 0 },
+        { thumb: steps.refined, label: "Refined", idx: 1 },
+        { thumb: steps.upscaled, label: "Upscaled", idx: 2 },
+        { thumb: steps.postprocessed, label: "Post", idx: 3 },
+      ].filter((s) => s.thumb != null && s.thumb !== "")
+    : [];
 
   return (
     <div className="flex-shrink-0 w-72 rounded-xl overflow-hidden border border-slate-200 bg-slate-900 shadow-sm hover:shadow-md transition-shadow">
       <div className="grid grid-cols-2 gap-0.5 bg-slate-700 p-0.5">
-        {stepThumbs.map((thumb, i) => (
+        {stepThumbs.map((step) => (
           <div
-            key={i}
+            key={step.idx}
             className="relative group cursor-pointer overflow-hidden"
             style={{ aspectRatio: "9/16" }}
             onClick={() => {
-              if (onPlay && thumb && isVideoUrl(thumb)) {
-                onPlay(thumb, `${video.title} - ${stepLabels[i]}`);
+              if (onPlay && step.thumb && isVideoUrl(step.thumb)) {
+                onPlay(step.thumb, `${video.title} - ${step.label}`);
               }
             }}
           >
-            <img src={thumb} alt={stepLabels[i]} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+            <img src={step.thumb} alt={step.label} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
             <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="w-7 h-7 rounded-full bg-white/90 flex items-center justify-center">
                 <Play className="w-3 h-3 text-slate-900 ml-0.5" fill="currentColor" />
               </div>
             </div>
             <div className="absolute bottom-1 left-1/2 -translate-x-1/2">
-              <span className={`text-white text-xs px-1.5 py-0.5 rounded font-bold ${
-                i === 0 ? "bg-slate-600" : i === 1 ? "bg-blue-600" : i === 2 ? "bg-purple-600" : "bg-green-600"
-              }`}>
-                {stepLabels[i]}
+              <span className={`text-white text-xs px-1.5 py-0.5 rounded font-bold ${stepColorByIdx[step.idx]}`}>
+                {step.label}
               </span>
             </div>
           </div>
         ))}
       </div>
       <div className="flex items-center justify-center gap-0.5 px-3 py-1 bg-slate-800">
-        {stepLabels.map((label, i) => (
-          <div key={i} className="flex items-center gap-0.5">
+        {stepThumbs.map((step, i) => (
+          <div key={step.idx} className="flex items-center gap-0.5">
             <span className={`text-xs font-bold ${
-              i === 0 ? "text-slate-400" : i === 1 ? "text-blue-400" : i === 2 ? "text-purple-400" : "text-green-400"
-            }`}>{label}</span>
-            {i < 3 && <ChevronRight className="w-2.5 h-2.5 text-slate-500" />}
+              step.idx === 0 ? "text-slate-400" : step.idx === 1 ? "text-blue-400" : step.idx === 2 ? "text-purple-400" : "text-green-400"
+            }`}>{step.label}</span>
+            {i < stepThumbs.length - 1 && <ChevronRight className="w-2.5 h-2.5 text-slate-500" />}
           </div>
         ))}
       </div>
@@ -348,7 +361,7 @@ function IngestionDetails({ details }: { details: Record<string, unknown> }) {
 
       {/* Ingested items table */}
       {ingested.length > 0 && (
-        <div className="bg-slate-50 rounded-lg overflow-hidden">
+        <div className="bg-slate-50 rounded-lg overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-100">
@@ -460,7 +473,7 @@ function FilterDetails({ details }: { details: Record<string, unknown> }) {
 
       {/* Candidates table */}
       {candidates.length > 0 && (
-        <div className="bg-slate-50 rounded-lg overflow-hidden">
+        <div className="bg-slate-50 rounded-lg overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-100">
@@ -609,6 +622,7 @@ function GenerationSummaryDetails({ details }: { details: Record<string, unknown
   const total = details.total as number ?? 0;
   const completed = details.completed as number ?? 0;
   const failed = details.failed as number ?? 0;
+  const lost = details.lost as number ?? 0;
   const running = details.running as number ?? 0;
 
   return (
@@ -629,6 +643,12 @@ function GenerationSummaryDetails({ details }: { details: Record<string, unknown
         <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
           <XCircle className="w-4 h-4 text-red-500" />
           <span className="text-sm text-red-700">{failed} failed</span>
+        </div>
+      )}
+      {lost > 0 && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5">
+          <Circle className="w-4 h-4 text-amber-500" />
+          <span className="text-sm text-amber-700">{lost} lost (server restarted)</span>
         </div>
       )}
       <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5">
@@ -704,7 +724,7 @@ function ReviewPanel({
   onComplete: () => void;
   onPlay?: (url: string, title: string) => void;
 }) {
-  const [items, setItems] = useState<ReviewItem[]>(() =>
+  const buildItems = useCallback((): ReviewItem[] =>
     vlmVideos.map((v) => {
       const vlm = vlmAccepted.find((a) => a.file_name === v.id);
       return {
@@ -717,10 +737,26 @@ function ReviewPanel({
         confidence: vlm?.confidence,
         reasons: vlm?.reasons,
       };
-    }),
-  );
+    }), [vlmVideos, vlmAccepted]);
+
+  const [items, setItems] = useState<ReviewItem[]>(buildItems);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // BUG-003: Re-sync items when VLM data changes (e.g., after refetch)
+  useEffect(() => {
+    setItems((prev) => {
+      const next = buildItems();
+      // Preserve user edits (prompt, approved) for items that still exist
+      return next.map((n) => {
+        const existing = prev.find((p) => p.file_name === n.file_name);
+        if (existing) {
+          return { ...n, approved: existing.approved, prompt: existing.prompt };
+        }
+        return n;
+      });
+    });
+  }, [buildItems]);
 
   const toggle = (idx: number) => {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, approved: !it.approved } : it)));
@@ -749,6 +785,8 @@ function ReviewPanel({
   };
 
   const approvedCount = items.filter((it) => it.approved).length;
+  const approvedWithoutPrompt = items.filter((it) => it.approved && !it.prompt.trim()).length;
+  const canSubmit = approvedCount > 0 && approvedWithoutPrompt === 0 && !submitting;
 
   return (
     <div className="space-y-4">
@@ -848,8 +886,13 @@ function ReviewPanel({
                     placeholder="Enter generation prompt for this video..."
                     value={item.prompt}
                     onChange={(e) => setPrompt(idx, e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className={`w-full px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      !item.prompt.trim() ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
+                    }`}
                   />
+                  {!item.prompt.trim() && (
+                    <p className="text-xs text-amber-600 mt-1">Prompt is required for approved videos</p>
+                  )}
                 </div>
               )}
             </div>
@@ -864,8 +907,11 @@ function ReviewPanel({
         </div>
       )}
 
-      <div className="flex justify-end">
-        <Button onClick={submit} disabled={submitting} className="gap-2">
+      <div className="flex items-center justify-end gap-3">
+        {approvedWithoutPrompt > 0 && (
+          <p className="text-sm text-amber-600">{approvedWithoutPrompt} approved video(s) need a prompt</p>
+        )}
+        <Button onClick={submit} disabled={!canSubmit} className="gap-2">
           {submitting ? (
             <><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</>
           ) : (
@@ -879,9 +925,10 @@ function ReviewPanel({
 
 // --- Generation Panel: controls for Stage 6 ---
 
-function formatProgress(progress: Record<string, unknown>): string {
+function formatProgress(progress: Record<string, unknown> | null | undefined): string {
+  if (!progress || typeof progress !== "object") return "Processing...";
   const stage = progress.stage as string | undefined;
-  if (!stage) return "";
+  if (!stage) return "Processing...";
   if (stage === "queued") return "Waiting in queue...";
   if (stage === "uploading") return "Uploading files...";
   if (stage === "downloading") return "Downloading results...";
@@ -890,10 +937,10 @@ function formatProgress(progress: Record<string, unknown>): string {
     return node ? `Executing: ${node}` : "Executing...";
   }
   if (stage === "sampling") {
-    const step = progress.step as number | undefined;
-    const total = progress.total as number | undefined;
+    const step = typeof progress.step === "number" ? progress.step : undefined;
+    const total = typeof progress.total === "number" ? progress.total : undefined;
     if (step !== undefined && total !== undefined) return `Sampling: step ${step}/${total}`;
-    const pct = progress.percent as number | undefined;
+    const pct = typeof progress.percent === "number" ? progress.percent : undefined;
     if (pct !== undefined) return `Sampling: ${pct}%`;
     return "Sampling...";
   }
@@ -1179,16 +1226,17 @@ function GenerationPanel({
               const isRetried = hasJob && existingJob && jobId !== existingJob.job_id;
               const persistedStatus = isRetried ? "running" : existingJob?.status;
               const isDeadJob = hasJob && !persistedStatus && !isRetried;
-              const isFailedJob = !isRetried && (persistedStatus === "failed" || persistedStatus === "unknown" || isDeadJob);
+              const isLostJob = !isRetried && (persistedStatus === "lost" || isDeadJob);
+              const isFailedJob = !isRetried && persistedStatus === "failed";
               const isCompletedJob = !isRetried && persistedStatus === "completed";
               const isRunningJob = isRetried || (hasJob && (persistedStatus === "running" || persistedStatus === "pending"));
 
               return (
                 <div key={video.file_name} className={`flex items-center gap-3 p-3 rounded-lg border bg-white ${
-                  isCompletedJob ? "border-green-200" : isFailedJob ? "border-red-200" : "border-slate-200"
+                  isCompletedJob ? "border-green-200" : isFailedJob ? "border-red-200" : isLostJob ? "border-amber-200" : "border-slate-200"
                 }`}>
                   <FileVideo className={`w-4 h-4 flex-shrink-0 ${
-                    isCompletedJob ? "text-green-600" : isFailedJob ? "text-red-500" : "text-purple-600"
+                    isCompletedJob ? "text-green-600" : isFailedJob ? "text-red-500" : isLostJob ? "text-amber-500" : "text-purple-600"
                   }`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-mono truncate">{video.file_name}</p>
@@ -1204,7 +1252,7 @@ function GenerationPanel({
                             className="relative w-16 h-28 rounded overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 hover:border-green-400 transition-colors"
                             onClick={() => onPlayVideo?.(out.url, `${out.name} — ${video.file_name}`)}
                           >
-                            <video src={out.url} preload="metadata" muted className="w-full h-full object-cover" onLoadedData={(e) => { if (e.currentTarget.duration > 1) e.currentTarget.currentTime = 1; }} />
+                            <video src={out.url} preload="metadata" muted className="w-full h-full object-cover" onLoadedData={(e) => { try { if (e.currentTarget.duration > 1) e.currentTarget.currentTime = 1; } catch { /* some formats don't support seeking */ } }} />
                             <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                               <Play className="w-4 h-4 text-white" fill="white" />
                             </div>
@@ -1227,6 +1275,17 @@ function GenerationPanel({
                       disabled={generatingIdx !== null}
                     >
                       <XCircle className="w-3.5 h-3.5 mr-1" /> Retry
+                    </Button>
+                  ) : isLostJob ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-amber-600 border-amber-200 hover:bg-amber-50"
+                      onClick={() => runGeneration(video, idx)}
+                      disabled={generatingIdx !== null}
+                      title="Status unavailable (server restarted)"
+                    >
+                      <Circle className="w-3.5 h-3.5 mr-1" /> Retry
                     </Button>
                   ) : isRunningJob ? (
                     <Badge className="bg-blue-100 text-blue-800 border-blue-200 flex-shrink-0">
@@ -1330,7 +1389,7 @@ export default function TaskDetailPage() {
   const progressPercentage = (completedStages / totalStages) * 100;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 overflow-x-hidden">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         <Link to={`/avatar/${influencer.influencer_id}`}>
           <Button variant="ghost" className="mb-6">
@@ -1397,7 +1456,7 @@ export default function TaskDetailPage() {
 
             return (
               <div key={key} className="relative">
-                <Card className={`${stage.status === "in-progress" ? "border-blue-300 shadow-lg" : ""}`}>
+                <Card className={`${stage.status === "in-progress" ? "border-blue-300 shadow-lg" : stage.status === "lost" ? "border-amber-300" : ""}`}>
                   <CardHeader>
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-4">
@@ -1405,12 +1464,14 @@ export default function TaskDetailPage() {
                           stage.status === "completed" ? "bg-green-100" :
                           stage.status === "in-progress" ? "bg-blue-100" :
                           stage.status === "failed" ? "bg-red-100" :
+                          stage.status === "lost" ? "bg-amber-100" :
                           "bg-slate-100"
                         }`}>
                           <Icon className={`w-6 h-6 ${
                             stage.status === "completed" ? "text-green-600" :
                             stage.status === "in-progress" ? "text-blue-600" :
                             stage.status === "failed" ? "text-red-600" :
+                            stage.status === "lost" ? "text-amber-500" :
                             "text-slate-400"
                           }`} />
                         </div>

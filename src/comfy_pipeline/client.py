@@ -118,7 +118,14 @@ class ComfyUIClient:
                         break  # execution complete
                     name = node_names.get(node, "") if node_names else ""
                     label = f"{node} ({name})" if name else node
-                    print(f"  Executing node {label}...", file=__import__('sys').stderr)
+                    print(f"  Executing node {label}...", file=__import__('sys').stderr, flush=True)
+
+                elif msg_type == "progress":
+                    prog_data = data.get("data", {})
+                    step = prog_data.get("value", 0)
+                    total = prog_data.get("max", 0)
+                    if total > 0:
+                        print(f"  Step {step}/{total}", file=__import__('sys').stderr, flush=True)
 
                 elif msg_type == "execution_error":
                     raise RuntimeError(f"Execution error: {data['data']}")

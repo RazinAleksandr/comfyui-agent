@@ -65,9 +65,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
           },
           videos: downloadVideos.length > 0 ? downloadVideos : undefined,
         }
-      : totalIngested > 0
-        ? { status: "in-progress" }
-        : { status: "pending" };
+      : { status: "pending" };
 
   // -- Stage 3: Candidate Filter --
   const filterVideos: VideoPreview[] = [];
@@ -131,9 +129,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
         },
         videos: filterVideos.length > 0 ? filterVideos : undefined,
       }
-    : totalDownloaded > 0
-      ? { status: "in-progress" }
-      : { status: "pending" };
+    : { status: "pending" };
 
   // -- Stage 4: VLM Scoring --
   const vlmVideos: VideoPreview[] = [];
@@ -176,9 +172,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
         },
         videos: vlmVideos.length > 0 ? vlmVideos : undefined,
       }
-    : hasFilter
-      ? { status: "in-progress" }
-      : { status: "pending" };
+    : { status: "pending" };
 
   // -- Stage 5: Review --
   const reviewData = run.review;
@@ -213,23 +207,31 @@ export function pipelineRunToTask(run: PipelineRun): Task {
         },
         videos: reviewVideos.length > 0 ? reviewVideos : undefined,
       }
-    : hasVlm
-      ? { status: "pending" }
-      : { status: "pending" };
+    : { status: "pending" };
 
   // -- Stage 6: Generation --
   const genJobs = run.generation?.jobs ?? [];
   let generation: StageResult;
   if (genJobs.length > 0) {
-    // Jobs without a status (lost on server restart) are treated as "failed" (unknown)
-    const jobStatuses = genJobs.map((j) => j.status || "unknown");
+    // Jobs without a status were lost on server restart — distinct from actual failures
+    const jobStatuses = genJobs.map((j) => j.status || "lost");
     const allCompleted = jobStatuses.every((s) => s === "completed");
     const anyRunning = jobStatuses.some((s) => s === "running" || s === "pending");
-    const anyFailed = jobStatuses.some((s) => s === "failed" || s === "unknown");
-    const genStatus = allCompleted ? "completed" : anyRunning ? "in-progress" : anyFailed ? "failed" : "pending";
+    const anyFailed = jobStatuses.some((s) => s === "failed");
+    const anyLost = jobStatuses.some((s) => s === "lost");
+    const genStatus = allCompleted
+      ? "completed"
+      : anyRunning
+        ? "in-progress"
+        : anyFailed
+          ? "failed"
+          : anyLost
+            ? "lost"
+            : "pending";
 
     const completedCount = jobStatuses.filter((s) => s === "completed").length;
-    const failedCount = jobStatuses.filter((s) => s === "failed" || s === "unknown").length;
+    const failedCount = jobStatuses.filter((s) => s === "failed").length;
+    const lostCount = jobStatuses.filter((s) => s === "lost").length;
 
     generation = {
       status: genStatus,
@@ -239,11 +241,12 @@ export function pipelineRunToTask(run: PipelineRun): Task {
         total: genJobs.length,
         completed: completedCount,
         failed: failedCount,
+        lost: lostCount,
         running: jobStatuses.filter((s) => s === "running").length,
       },
     };
   } else {
-    generation = reviewCompleted ? { status: "pending" } : { status: "pending" };
+    generation = { status: "pending" };
   }
 
   // -- Overall task status --
@@ -256,7 +259,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
   if (hasFailed) status = "failed";
   else if (pipelineDone) status = "completed";
   else if (hasInProgress) status = "in-progress";
-  else status = "in-progress";
+  else status = "pending";
 
   return {
     id: run.run_id,

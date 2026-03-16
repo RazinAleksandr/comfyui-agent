@@ -24,7 +24,11 @@ class SPAStaticFiles(StaticFiles):
         try:
             await super().__call__(scope, receive, send)
         except Exception:
-            # If the file is not found, serve index.html for SPA routing
+            # Don't serve SPA fallback for API or file-serving routes —
+            # let them return proper 404/error responses instead of HTML.
+            path = scope.get("path", "")
+            if path.startswith("/api/") or path.startswith("/files/"):
+                raise
             index = Path(self.directory) / "index.html"  # type: ignore[arg-type]
             if index.is_file():
                 response = FileResponse(index, media_type="text/html")

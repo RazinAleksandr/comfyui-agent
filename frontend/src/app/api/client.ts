@@ -13,6 +13,7 @@ import type {
 } from "./types";
 
 const BASE = "/api/v1";
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 class ApiError extends Error {
   constructor(
@@ -24,13 +25,35 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, init);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(res.status, `API ${res.status}: ${text}`);
+interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchInit } = init ?? {};
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      ...fetchInit,
+      signal: controller.signal,
+    });
+    // Clear timeout once headers are received — don't abort during body parsing
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ApiError(res.status, `API ${res.status}: ${text}`);
+    }
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(0, `Request to ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return res.json();
 }
 
 export const api = {

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Coroutine
 
@@ -31,9 +31,51 @@ class JobInfo(BaseModel):
 
 
 class JobManager:
+    _MAX_COMPLETED_JOBS = 500
+    _COMPLETED_JOB_TTL = timedelta(hours=24)
+
     def __init__(self) -> None:
         self._jobs: dict[str, JobInfo] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+
+    def _cleanup_old_jobs(self) -> None:
+        """Remove old completed/failed jobs to bound memory usage.
+
+        Keeps at most ``_MAX_COMPLETED_JOBS`` finished jobs, preferring those
+        created within the last 24 hours.  Active (pending/running) jobs are
+        never removed.
+        """
+        now = datetime.now(UTC)
+        active_statuses = {JobStatus.pending, JobStatus.running}
+
+        finished: list[tuple[str, JobInfo]] = [
+            (jid, info)
+            for jid, info in self._jobs.items()
+            if info.status not in active_statuses
+        ]
+
+        if len(finished) <= self._MAX_COMPLETED_JOBS:
+            return
+
+        # Sort oldest-first so we can drop from the front
+        finished.sort(key=lambda pair: pair[1].created_at)
+
+        # First pass: remove all jobs older than TTL
+        for jid, info in finished:
+            if (now - info.created_at) > self._COMPLETED_JOB_TTL:
+                del self._jobs[jid]
+                self._tasks.pop(jid, None)
+
+        # Second pass: enforce hard cap on remaining finished jobs
+        remaining = [
+            (jid, info) for jid, info in self._jobs.items()
+            if info.status not in active_statuses
+        ]
+        if len(remaining) > self._MAX_COMPLETED_JOBS:
+            remaining.sort(key=lambda pair: pair[1].created_at)
+            for jid, _ in remaining[:len(remaining) - self._MAX_COMPLETED_JOBS]:
+                del self._jobs[jid]
+                self._tasks.pop(jid, None)
 
     def submit(
         self,
@@ -41,6 +83,7 @@ class JobManager:
         *args: Any,
         **kwargs: Any,
     ) -> str:
+        self._cleanup_old_jobs()
         job_id = uuid.uuid4().hex[:12]
         now = datetime.now(UTC)
         self._jobs[job_id] = JobInfo(
