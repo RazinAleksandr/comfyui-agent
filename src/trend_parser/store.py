@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,6 +104,13 @@ class FilesystemStore:
             encoding="utf-8",
         )
         return self.load_influencer(normalized)  # type: ignore[return-value]
+
+    def delete_influencer(self, influencer_id: str) -> None:
+        """Remove an influencer directory and all its data."""
+        _validate_id(influencer_id)
+        target = self.influencer_dir(influencer_id)
+        if target.exists():
+            shutil.rmtree(target)
 
     def list_pipeline_runs(self, influencer_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """List pipeline runs for an influencer, newest first."""

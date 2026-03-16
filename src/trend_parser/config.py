@@ -11,7 +11,7 @@ import yaml
 class ParserConfig:
     """Parser configuration loaded from YAML with ${ENV_VAR} interpolation."""
 
-    default_source: str = "seed"
+    default_sources: dict = field(default_factory=lambda: {"tiktok": "tiktok_custom", "instagram": "apify"})
 
     # Apify
     apify_token: str = ""

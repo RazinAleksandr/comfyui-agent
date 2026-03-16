@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useNavigate } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +19,7 @@ import {
 import { useInfluencer, usePipelineRuns, useJobPoller } from "../api/hooks";
 import { api } from "../api/client";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
-import type { Task } from "../api/types";
+import type { InfluencerOut, JobInfo, Task } from "../api/types";
 import {
   ArrowLeft,
   Download,
@@ -32,6 +33,8 @@ import {
   TrendingUp,
   Clock,
   Play,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { Separator } from "../components/ui/separator";
 
@@ -90,13 +93,15 @@ function getStatusColor(status: string) {
 
 export default function AvatarDetailPage() {
   const { avatarId } = useParams();
-  const { data: influencer, loading: loadingInf } = useInfluencer(avatarId);
+  const navigate = useNavigate();
+  const { data: influencer, loading: loadingInf, refetch: refetchInfluencer } = useInfluencer(avatarId);
   const { data: tasks, loading: loadingTasks, refetch: refetchTasks } = usePipelineRuns(avatarId);
 
   const [pipelineDialogOpen, setPipelineDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [completedJobStatus, setCompletedJobStatus] = useState<string | null>(null);
-  const { job, isComplete: jobDone } = useJobPoller(activeJobId);
+  const { job: activeJob, isComplete: jobDone } = useJobPoller(activeJobId, 2000);
 
   // On mount, restore any active pipeline job for this influencer
   useEffect(() => {
@@ -108,18 +113,18 @@ export default function AvatarDetailPage() {
     }).catch(() => {});
   }, [avatarId]);
 
-  // When job completes, show result briefly, refetch, then clear
+  // When job completes, keep live card visible briefly, then refetch and clear
   useEffect(() => {
-    if (jobDone && activeJobId && job) {
-      setCompletedJobStatus(job.status === "failed" ? "failed" : "completed");
-      refetchTasks();
+    if (jobDone && activeJobId) {
+      // Show final state for 2 seconds before switching to the static task card
       const timer = setTimeout(() => {
-        setActiveJobId(null);
-        setCompletedJobStatus(null);
-      }, 3000);
+        refetchTasks();
+        // Give refetch time to complete before hiding live card
+        setTimeout(() => setActiveJobId(null), 500);
+      }, 2000);
       return () => clearTimeout(timer);
     }
-  }, [jobDone, activeJobId, job, refetchTasks]);
+  }, [jobDone, activeJobId, refetchTasks]);
 
   if (loadingInf) {
     return (
@@ -159,6 +164,9 @@ export default function AvatarDetailPage() {
     );
   }
 
+  // The newest task is the active one when a pipeline job is running
+  const newestTaskId = tasks && tasks.length > 0 ? tasks[0].id : null;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="container mx-auto px-4 py-8">
@@ -187,6 +195,38 @@ export default function AvatarDetailPage() {
                     <Badge variant="outline" className="mb-3">
                       @{influencer.influencer_id}
                     </Badge>
+                  </div>
+                  <div className="flex gap-2">
+                    <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-1.5">
+                          <Pencil className="w-4 h-4" />
+                          Edit
+                        </Button>
+                      </DialogTrigger>
+                      <EditInfluencerDialog
+                        influencer={influencer}
+                        onSaved={() => {
+                          setEditDialogOpen(false);
+                          refetchInfluencer();
+                        }}
+                      />
+                    </Dialog>
+                    <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200">
+                          <Trash2 className="w-4 h-4" />
+                          Delete
+                        </Button>
+                      </DialogTrigger>
+                      <DeleteInfluencerDialog
+                        influencer={influencer}
+                        onDeleted={() => {
+                          setDeleteDialogOpen(false);
+                          navigate("/");
+                        }}
+                      />
+                    </Dialog>
                   </div>
                 </div>
                 <CardDescription className="text-base mb-4">
@@ -276,44 +316,8 @@ export default function AvatarDetailPage() {
         </div>
         <Separator className="mb-6" />
 
-        {/* Active job banner */}
-        {(activeJobId || completedJobStatus) && (
-          <div className={`mb-4 p-4 rounded-lg border flex items-center gap-3 ${
-            completedJobStatus === "failed" || job?.status === "failed"
-              ? "bg-red-50 border-red-200"
-              : completedJobStatus === "completed"
-                ? "bg-green-50 border-green-200"
-                : "bg-blue-50 border-blue-200"
-          }`}>
-            {completedJobStatus === "failed" || job?.status === "failed" ? (
-              <XCircle className="w-5 h-5 text-red-600" />
-            ) : completedJobStatus === "completed" ? (
-              <CheckCircle2 className="w-5 h-5 text-green-600" />
-            ) : (
-              <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
-            )}
-            <div>
-              <p className={`font-medium ${
-                completedJobStatus === "failed" || job?.status === "failed" ? "text-red-900"
-                  : completedJobStatus === "completed" ? "text-green-900"
-                  : "text-blue-900"
-              }`}>
-                {completedJobStatus === "failed" || job?.status === "failed"
-                  ? "Pipeline failed"
-                  : completedJobStatus === "completed"
-                    ? "Pipeline completed!"
-                    : "Pipeline running..."}
-              </p>
-              <p className={`text-sm ${
-                completedJobStatus === "failed" || job?.status === "failed" ? "text-red-700"
-                  : completedJobStatus === "completed" ? "text-green-700"
-                  : "text-blue-700"
-              }`}>
-                {job?.status ?? completedJobStatus}
-                {job?.error && `: ${job.error}`}
-              </p>
-            </div>
-          </div>
+        {activeJobId && activeJob && (
+          <LiveTaskCard job={activeJob} isDone={jobDone} />
         )}
 
         <div className="space-y-4">
@@ -334,56 +338,65 @@ export default function AvatarDetailPage() {
               </Card>
             ))
           ) : (
-            tasks?.map((task: Task) => (
-              <Link key={task.id} to={`/task/${influencer.influencer_id}/${task.id}`}>
-                <Card className="hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5 cursor-pointer">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div>
-                          <CardTitle className="text-xl mb-1">Run {task.id}</CardTitle>
-                          <CardDescription className="flex items-center gap-2">
-                            <Clock className="w-4 h-4" />
-                            {new Date(task.created_at).toLocaleString()}
-                          </CardDescription>
-                        </div>
-                      </div>
-                      <Badge className={getStatusColor(task.status)}>
-                        {task.status}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                      {Object.entries(task.stages).map(([key, stage]) => {
-                        const Icon = stageIcons[key as keyof typeof stageIcons];
-                        return (
-                          <div key={key} className="flex flex-col items-center text-center p-3 rounded-lg bg-slate-50">
-                            <div className="flex items-center gap-2 mb-2">
-                              {getStatusIcon(stage.status)}
-                              <Icon className="w-4 h-4 text-slate-600" />
-                            </div>
-                            <div className="text-xs font-medium text-slate-700 mb-1">
-                              {stageTitles[key as keyof typeof stageTitles]}
-                            </div>
-                            {stage.items_count !== undefined && (
-                              <div className="text-lg font-bold text-purple-600">
-                                {stage.items_count}
-                              </div>
-                            )}
-                            {stage.duration && (
-                              <div className="text-xs text-slate-500">
-                                {stage.duration}
-                              </div>
-                            )}
+            tasks?.filter((task: Task) => {
+              // Hide the newest task when the live card is showing (avoids duplicate)
+              if (activeJobId && !jobDone && task.id === newestTaskId) return false;
+              return true;
+            }).map((task: Task) => {
+              return (
+                <Link key={task.id} to={`/task/${influencer.influencer_id}/${task.id}`}>
+                  <Card className="hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5 cursor-pointer">
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <div>
+                            <CardTitle className="text-xl mb-1">Run {task.id}</CardTitle>
+                            <CardDescription className="flex items-center gap-2">
+                              <Clock className="w-4 h-4" />
+                              {new Date(task.created_at).toLocaleString()}
+                            </CardDescription>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
-            ))
+                        </div>
+                        <Badge className={getStatusColor(task.status)}>
+                          {task.status}
+                        </Badge>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                        {Object.entries(task.stages).map(([key, stage]) => {
+                          const Icon = stageIcons[key as keyof typeof stageIcons];
+                          return (
+                            <div key={key} className={`flex flex-col items-center text-center p-3 rounded-lg transition-all duration-500 ${
+                              stage.status === "completed" ? "bg-green-50" :
+                              stage.status === "in-progress" ? "bg-blue-50" :
+                              "bg-slate-50"
+                            }`}>
+                              <div className="flex items-center gap-2 mb-2 transition-all duration-300">
+                                {getStatusIcon(stage.status)}
+                                <Icon className={`w-4 h-4 transition-colors duration-300 ${
+                                  stage.status === "completed" ? "text-green-600" :
+                                  stage.status === "in-progress" ? "text-blue-600" :
+                                  "text-slate-600"
+                                }`} />
+                              </div>
+                              <div className="text-xs font-medium text-slate-700 mb-1">
+                                {stageTitles[key as keyof typeof stageTitles]}
+                              </div>
+                              <div className="text-lg font-bold transition-all duration-300" style={{ opacity: stage.items_count !== undefined ? 1 : 0 }}>
+                                <span className={stage.status === "completed" ? "text-green-600" : "text-purple-600"}>
+                                  {stage.items_count ?? "\u00A0"}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              );
+            })
           )}
 
           {!loadingTasks && (!tasks || tasks.length === 0) && (
@@ -401,6 +414,229 @@ export default function AvatarDetailPage() {
   );
 }
 
+function LiveTaskCard({ job, isDone }: { job: JobInfo; isDone: boolean }) {
+  const progress = job.progress as {
+    current_stage?: string;
+    stages?: Record<string, { status: string; items?: number }>;
+  };
+  const stages = progress?.stages ?? {};
+
+  const stageData: Record<string, { status: string; items?: number }> = {
+    trend_ingestion: stages.ingestion ?? { status: "pending" },
+    download: stages.download ?? { status: "pending" },
+    candidate_filter: stages.filter ?? { status: "pending" },
+    vlm_scoring: stages.vlm ?? { status: "pending" },
+    review: { status: "pending" },
+    generation: { status: "pending" },
+  };
+
+  return (
+    <Card className={`mb-4 transition-all duration-500 ${isDone ? "ring-2 ring-green-400 ring-opacity-50" : "ring-2 ring-blue-400 ring-opacity-50"}`}>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {isDone ? (
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+            ) : (
+              <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+            )}
+            <div>
+              <CardTitle className="text-xl mb-1">
+                {isDone ? "Pipeline Completed" : "Pipeline Running"}
+              </CardTitle>
+              <CardDescription className="flex items-center gap-2">
+                <Clock className="w-4 h-4" />
+                {isDone
+                  ? "Finished — loading results..."
+                  : progress?.current_stage
+                    ? `Stage: ${progress.current_stage}`
+                    : "Starting..."}
+              </CardDescription>
+            </div>
+          </div>
+          <Badge className={isDone ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"}>
+            {isDone ? "completed" : "in-progress"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          {Object.entries(stageData).map(([key, stage]) => {
+            const Icon = stageIcons[key as keyof typeof stageIcons];
+            const uiStatus = stage.status === "completed" ? "completed" :
+              stage.status === "running" ? "in-progress" : "pending";
+            return (
+              <div key={key} className={`flex flex-col items-center text-center p-3 rounded-lg transition-all duration-500 ${
+                uiStatus === "completed" ? "bg-green-50" :
+                uiStatus === "in-progress" ? "bg-blue-50" : "bg-slate-50"
+              }`}>
+                <div className="flex items-center gap-2 mb-2 transition-all duration-300">
+                  {getStatusIcon(uiStatus)}
+                  <Icon className={`w-4 h-4 transition-colors duration-300 ${
+                    uiStatus === "completed" ? "text-green-600" :
+                    uiStatus === "in-progress" ? "text-blue-600" :
+                    "text-slate-600"
+                  }`} />
+                </div>
+                <div className="text-xs font-medium text-slate-700 mb-1">
+                  {stageTitles[key as keyof typeof stageTitles]}
+                </div>
+                <div className="text-lg font-bold transition-all duration-300" style={{ opacity: stage.items !== undefined ? 1 : 0 }}>
+                  <span className={uiStatus === "completed" ? "text-green-600" : "text-purple-600"}>
+                    {stage.items ?? "\u00A0"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EditInfluencerDialog({
+  influencer,
+  onSaved,
+}: {
+  influencer: InfluencerOut;
+  onSaved: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refImage, setRefImage] = useState<File | null>(null);
+
+  const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+
+    const form = new FormData(e.currentTarget);
+    const name = (form.get("name") as string).trim();
+    const description = (form.get("description") as string).trim();
+    const hashtagsRaw = (form.get("hashtags") as string).trim();
+    const videoReq = (form.get("video_suggestions_requirement") as string).trim();
+
+    if (!name) {
+      setError("Name is required");
+      setSaving(false);
+      return;
+    }
+
+    try {
+      await api.upsertInfluencer(influencer.influencer_id, {
+        name,
+        description: description || undefined,
+        hashtags: hashtagsRaw ? hashtagsRaw.split(",").map((h) => h.trim().replace(/^#/, "")) : undefined,
+        video_suggestions_requirement: videoReq || undefined,
+      });
+
+      if (refImage) {
+        await api.uploadReferenceImage(influencer.influencer_id, refImage);
+      }
+
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle>Edit Avatar</DialogTitle>
+        <DialogDescription>
+          Update {influencer.name}'s profile
+        </DialogDescription>
+      </DialogHeader>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="edit-name">Name</Label>
+          <Input id="edit-name" name="name" defaultValue={influencer.name} required />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="edit-description">Description</Label>
+          <Textarea id="edit-description" name="description" defaultValue={influencer.description ?? ""} rows={3} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="edit-hashtags">Hashtags (comma-separated)</Label>
+          <Input id="edit-hashtags" name="hashtags" defaultValue={influencer.hashtags?.join(", ") ?? ""} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="edit-video-req">Video Selection Requirements</Label>
+          <Textarea id="edit-video-req" name="video_suggestions_requirement" defaultValue={influencer.video_suggestions_requirement ?? ""} rows={2} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="edit-ref-image">Reference Image</Label>
+          <Input
+            id="edit-ref-image"
+            type="file"
+            accept="image/*"
+            onChange={(e) => setRefImage(e.target.files?.[0] ?? null)}
+          />
+          {influencer.profile_image_url && !refImage && (
+            <p className="text-xs text-slate-500">Current image will be kept if no new image is selected.</p>
+          )}
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <DialogFooter>
+          <Button type="submit" disabled={saving}>
+            {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+            Save Changes
+          </Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  );
+}
+
+function DeleteInfluencerDialog({
+  influencer,
+  onDeleted,
+}: {
+  influencer: InfluencerOut;
+  onDeleted: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteInfluencer(influencer.influencer_id);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>Delete Avatar</DialogTitle>
+        <DialogDescription>
+          Are you sure you want to delete {influencer.name}? This will remove all associated data including pipeline runs. This action cannot be undone.
+        </DialogDescription>
+      </DialogHeader>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <DialogFooter className="gap-2 sm:gap-0">
+        <DialogTrigger asChild>
+          <Button variant="outline">Cancel</Button>
+        </DialogTrigger>
+        <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+          {deleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+          Delete
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
+
 function StartPipelineDialog({
   influencerId,
   defaultHashtags,
@@ -414,9 +650,17 @@ function StartPipelineDialog({
   const [error, setError] = useState<string | null>(null);
   const [tiktok, setTiktok] = useState(true);
   const [instagram, setInstagram] = useState(false);
+  const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
+
+  // Load default sources from config
+  useEffect(() => {
+    api.getParserDefaults().then((d) => {
+      setDefaultSources(d.default_sources);
+    }).catch(() => {});
+  }, []);
 
   const handleSubmit = useCallback(
-    async (e: React.FormEvent<HTMLFormElement>) => {
+    async (e: React.SyntheticEvent<HTMLFormElement>) => {
       e.preventDefault();
       setSubmitting(true);
       setError(null);
@@ -430,10 +674,10 @@ function StartPipelineDialog({
 
       const platforms: Record<string, { source: string; limit: number; selector?: { hashtags: string[] } }> = {};
       if (tiktok) {
-        platforms.tiktok = { source: "tiktok_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
+        platforms.tiktok = { source: defaultSources.tiktok || "tiktok_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
       }
       if (instagram) {
-        platforms.instagram = { source: "instagram_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
+        platforms.instagram = { source: defaultSources.instagram || "apify", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
       }
 
       if (Object.keys(platforms).length === 0) {
@@ -454,7 +698,7 @@ function StartPipelineDialog({
         setSubmitting(false);
       }
     },
-    [influencerId, tiktok, instagram, onStarted],
+    [influencerId, tiktok, instagram, defaultSources, onStarted],
   );
 
   return (

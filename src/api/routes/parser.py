@@ -41,6 +41,15 @@ class ReviewSubmission(BaseModel):
 # --- Routes ---
 
 
+@router.get("/defaults")
+async def get_defaults() -> dict:
+    """Return default parser settings for the frontend."""
+    config = get_config()
+    return {
+        "default_sources": config.default_sources,
+    }
+
+
 @router.post("/run")
 async def start_parse(body: ParseRequest) -> dict:
     """Start a trend parsing job. Returns a job_id for polling."""
@@ -176,7 +185,7 @@ def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         if review:
             run["review"] = review
 
-        # Load generation manifest and enrich with live job status
+        # Load generation manifest and enrich with live job status + output URLs
         gen_path = Path(base_dir) / "generation_manifest.json"
         gen_data = _load_json(str(gen_path))
         if gen_data:
@@ -187,6 +196,15 @@ def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                     entry["status"] = job_info.status
                     entry["progress"] = job_info.progress
                     entry["error"] = job_info.error
+                    # Include output file URLs for completed jobs
+                    if job_info.status == "completed" and job_info.result:
+                        result = job_info.result
+                        if isinstance(result, dict):
+                            entry["outputs"] = [
+                                {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
+                                for p in result.get("outputs", [])
+                                if Path(p).exists()
+                            ]
             run["generation"] = gen_data
 
     for plat in run.get("platforms", []):
@@ -294,10 +312,10 @@ async def _run_parse(body: ParseRequest) -> dict:
     }
 
 
-async def _run_pipeline(body: PipelineRunRequest) -> dict:
+async def _run_pipeline(body: PipelineRunRequest, progress_fn=None) -> dict:
     config = get_config()
     store = get_store()
     seed_dir = get_seed_dir()
     runner = PipelineRunnerService(config=config, store=store, seed_dir=seed_dir)
-    result = await asyncio.to_thread(runner.run, body)
+    result = await asyncio.to_thread(runner.run, body, progress_callback=progress_fn)
     return result.model_dump(mode="json")

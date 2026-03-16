@@ -22,6 +22,7 @@ class VastConfig:
     onstart: str = ""
     geolocation: str = "EU"
     extra_filters: dict = field(default_factory=dict)
+    health_check_interval: int = 120  # seconds between background server health checks (0 = disabled)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> VastConfig:
@@ -42,4 +43,5 @@ class VastConfig:
             onstart=data.get("onstart", cls.onstart),
             geolocation=data.get("geolocation", cls.geolocation),
             extra_filters=data.get("extra_filters", {}),
+            health_check_interval=data.get("health_check_interval", cls.health_check_interval),
         )

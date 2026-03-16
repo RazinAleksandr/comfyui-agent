@@ -2,7 +2,7 @@ name: isp_postprocess
 description: "ISP post-processing — removes AI plastic look, adds cinematic feel"
 
 parameters:
-  graininess: 40      # 0-100, removes plastic AI effect
+  graininess: 25 #40      # 0-100, removes plastic AI effect
   sharpness: 20       # 0-100, emphasizes face and clothing details
   brightness: -5      # -100 to 100, adds depth and removes plastic look
   vignette: 10        # 0-100, adds cinematic effect

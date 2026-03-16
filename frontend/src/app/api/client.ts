@@ -6,6 +6,8 @@ import type {
   PipelineRunRequest,
   GenerationRequest,
   ServerStatus,
+  ServerInfo,
+  AllocationInfo,
   ReviewVideo,
   ReviewData,
 } from "./types";
@@ -37,6 +39,9 @@ export const api = {
 
   getInfluencer: (id: string) => request<InfluencerOut>(`/influencers/${id}`),
 
+  deleteInfluencer: (id: string) =>
+    request<{ deleted: string }>(`/influencers/${id}`, { method: "DELETE" }),
+
   upsertInfluencer: (id: string, body: InfluencerUpsertRequest) =>
     request<InfluencerOut>(`/influencers/${id}`, {
       method: "PUT",
@@ -54,6 +59,9 @@ export const api = {
   },
 
   // -- Parser / Pipeline --
+  getParserDefaults: () =>
+    request<{ default_sources: Record<string, string> }>("/parser/defaults"),
+
   startPipeline: (body: PipelineRunRequest) =>
     request<{ job_id: string }>("/parser/pipeline", {
       method: "POST",
@@ -95,20 +103,46 @@ export const api = {
   },
 
   // -- Generation --
-  serverStatus: () => request<ServerStatus>("/generation/server/status"),
+  serverStatus: (influencerId?: string) => {
+    const params = influencerId ? `?influencer_id=${encodeURIComponent(influencerId)}` : "";
+    return request<ServerStatus>(`/generation/server/status${params}`);
+  },
 
-  serverUp: (workflow = "wan_animate") =>
-    request<{ job_id: string }>("/generation/server/up", {
+  serverUp: (workflow = "wan_animate", influencerId?: string) => {
+    const body: Record<string, string> = { workflow };
+    if (influencerId) body.influencer_id = influencerId;
+    return request<{ job_id: string; server_id: string }>("/generation/server/up", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workflow }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
 
   serverDown: () =>
     request<{ status: string }>("/generation/server/down", { method: "POST" }),
 
+  listServers: () => request<ServerInfo[]>("/generation/servers"),
+
+  shutdownServer: (serverId: string) =>
+    request<{ status: string }>(`/generation/server/${encodeURIComponent(serverId)}/down`, {
+      method: "POST",
+    }),
+
+  setAutoShutdown: (serverId: string, enabled: boolean) =>
+    request<{ server_id: string; auto_shutdown: boolean }>(
+      `/generation/server/${encodeURIComponent(serverId)}/auto-shutdown`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+
+  getAllocationInfo: (influencerId: string) =>
+    request<AllocationInfo>(`/generation/server/allocate?influencer_id=${encodeURIComponent(influencerId)}`),
+
   startGeneration: (body: GenerationRequest) =>
-    request<{ job_id: string }>("/generation/run", {
+    request<{ job_id: string; server_id: string }>("/generation/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

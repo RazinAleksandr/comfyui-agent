@@ -47,16 +47,20 @@ class TrendIngestService:
         selectors: dict[str, dict] | None = None,
     ) -> dict[str, list[RawTrendVideo]]:
         platforms_normalized = _normalize_platforms(platforms)
-        source_strategy = (source or self.config.default_source).lower().strip()
-        if source_strategy not in VALID_SOURCES:
+        source_strategy = (source or "").lower().strip() if source else None
+        if source_strategy and source_strategy not in VALID_SOURCES:
             raise ValueError("Unsupported source. Use seed, apify, tiktok_custom, or instagram_custom.")
         sources_by_platform = {str(k).lower(): str(v).lower() for k, v in (sources_by_platform or {}).items()}
         selectors = selectors or {}
+        per_platform_defaults = getattr(self.config, "default_sources", {})
 
         platform_videos: dict[str, list[RawTrendVideo]] = {}
         for platform in platforms_normalized:
             selector = TrendFetchSelector(**(selectors.get(platform) or {}))
-            platform_source = sources_by_platform.get(platform, source_strategy)
+            platform_source = sources_by_platform.get(
+                platform,
+                source_strategy or per_platform_defaults.get(platform, "tiktok_custom" if platform == "tiktok" else "apify"),
+            )
             videos = self._fetch_videos(
                 platform=platform,
                 limit=limit_per_platform,

@@ -1,9 +1,9 @@
-# ComfyUI Agent
+# AI Influencer Studio
 
-Unified backend for AI influencer video generation: trend discovery, GPU orchestration, and Telegram UI through a single REST API.
+Automated content generation for AI influencers: trend discovery, GPU orchestration, and video generation through a web UI and REST API.
 
 ```
-Clients (Telegram Bot, Frontend)
+Frontend (React SPA)  /  Telegram Bot
     │
     ▼
 FastAPI API (port 8000)
@@ -11,10 +11,11 @@ FastAPI API (port 8000)
 ├── /api/v1/influencers/*  influencer management
 ├── /api/v1/generation/*   GPU server + workflow execution
 ├── /api/v1/jobs/*         async job tracking
+├── /files/*               static file serving (images, videos)
 └── /health
     │
     ├── trend_parser/   ingest → download → filter → VLM select
-    ├── vast_agent/     VastAI GPU rental + SSH execution
+    ├── vast_agent/     VastAI GPU rental + SSH execution (multi-server)
     ├── isp_pipeline/   video postprocessing
     └── comfy_pipeline/ ComfyUI workflow runner (remote GPU)
 ```
@@ -85,9 +86,34 @@ comfy-bot    # send /start to your bot in Telegram
 
 ## Usage
 
-### Two processes
+### Web UI (recommended)
 
-The backend runs as two separate processes on the VPS:
+```bash
+# Production: single process serves everything
+cd frontend && npm run build
+comfy-api --host 0.0.0.0 --port 8000
+# Open http://localhost:8000
+```
+
+```bash
+# Development: two terminals
+comfy-api --port 8000                     # backend API
+cd frontend && npm run dev                # Vite dev server (proxies to backend)
+# Open http://localhost:5173
+```
+
+The web UI provides:
+- **Home page** — influencer grid with create dialog
+- **Avatar detail** — profile, pipeline stages, task list, start pipeline
+- **Task detail** — 6-stage pipeline view with:
+  - Trend ingestion results table (views, likes, hashtags)
+  - Downloaded video previews
+  - Candidate filter scores with quality/stability bars
+  - VLM scoring with Gemini AI reasoning
+  - Interactive review UI (approve/skip + prompt input)
+  - Generation controls with multi-server management, progress tracking, auto-shutdown
+
+### Backend + Telegram
 
 ```bash
 comfy-api --host 0.0.0.0 --port 8000    # FastAPI server
@@ -108,14 +134,18 @@ comfy-bot                                 # Telegram bot (calls API via HTTP)
 | `GET` | `/api/v1/influencers/{id}` | Get influencer profile |
 | `PUT` | `/api/v1/influencers/{id}` | Upsert influencer |
 | `POST` | `/api/v1/influencers/{id}/reference-image` | Upload reference image |
+| `GET` | `/api/v1/generation/servers` | List all GPU servers |
 | `GET` | `/api/v1/generation/server/status` | GPU server status |
-| `POST` | `/api/v1/generation/server/up` | Start GPU server |
-| `POST` | `/api/v1/generation/server/down` | Destroy GPU server |
+| `GET` | `/api/v1/generation/server/allocate` | Check server allocation for influencer |
+| `POST` | `/api/v1/generation/server/up` | Start/allocate GPU server |
+| `POST` | `/api/v1/generation/server/{id}/down` | Destroy specific GPU server |
+| `POST` | `/api/v1/generation/server/{id}/auto-shutdown` | Toggle auto-shutdown |
 | `POST` | `/api/v1/generation/run` | Start generation job |
 | `GET` | `/api/v1/jobs/{job_id}` | Poll job status |
+| `GET` | `/api/v1/jobs/active` | Find active jobs by type/influencer |
 | `GET` | `/api/v1/jobs` | List recent jobs |
 
-Long-running operations (parsing, generation, server startup) return a `job_id` immediately. Poll `/api/v1/jobs/{job_id}` for status.
+Long-running operations (parsing, generation, server startup) return a `job_id` immediately. Poll `/api/v1/jobs/{job_id}` for status. Generation jobs include real-time `progress` data (current node, sampling step).
 
 ### Telegram bot
 
@@ -218,9 +248,15 @@ src/
   api/              FastAPI application (routes, deps, job manager)
   trend_parser/     Trend discovery pipeline (ingest, download, filter, VLM)
   comfy_pipeline/   ComfyUI workflow execution (runs on GPU server)
-  vast_agent/       VastAI GPU rental + remote execution (runs on VPS)
+  vast_agent/       VastAI GPU rental + remote execution + multi-server management
   telegram_bot/     Telegram user interface (runs on VPS)
   isp_pipeline/     Video postprocessing (grain, sharpness, brightness, vignette)
+
+frontend/           React SPA (Vite + Tailwind + shadcn/ui)
+  src/app/
+    api/            API client, types, hooks, data mappers
+    pages/          HomePage, AvatarDetailPage, TaskDetailPage
+    components/     UI components (shadcn/ui + custom)
 
 configs/
   parser.yaml       Trend parser settings (sources, VLM, filter)
@@ -231,15 +267,28 @@ configs/
 
 shared/             Data directory (gitignored)
   influencers/      Per-influencer profiles, reference images, pipeline runs
+    {id}/
+      profile.json          Influencer metadata
+      reference.{ext}       Reference image
+      pipeline_runs/
+        {timestamp}/
+          run_manifest.json       Pipeline run metadata
+          review_manifest.json    Human review decisions
+          generation_manifest.json  Generation job tracking
+          {platform}/
+            downloads/            Downloaded videos
+            filtered/             Quality-filtered videos
+            selected/             VLM-approved videos
+            generated/            Generated output videos
   downloads/        Downloaded video cache
   seeds/            Seed data for development
-  parse_sessions/   Telegram /parse session logs
 ```
 
 ## Docs
 
-- [API Server](docs/api.md) — endpoints, async job system, dependencies
+- [API Server](docs/api.md) — endpoints, async job system, frontend serving, dependencies
 - [Trend Parser](docs/trend_parser.md) — pipeline stages, sources, filter scoring, VLM evaluation
 - [ComfyUI Pipeline](docs/pipeline.md) — commands, workflow configs, batch mode, parameter overrides
-- [VastAI Agent](docs/vast_agent.md) — commands, config, state tracking, programmatic API
+- [VastAI Agent](docs/vast_agent.md) — commands, multi-server management, auto-shutdown, programmatic API
 - [Telegram Bot](docs/telegram_bot.md) — conversation flow, commands, session logging
+- [Frontend](docs/frontend.md) — React SPA architecture, pages, API integration

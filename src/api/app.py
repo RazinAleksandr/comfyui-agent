@@ -58,6 +58,16 @@ def create_app(
 
     app = FastAPI(title="AI Influencer Studio", version="0.1.0")
 
+    @app.on_event("startup")
+    async def _start_health_check() -> None:
+        """Start the background VastAI server health-check on app startup."""
+        try:
+            from api.deps import get_server_manager
+            manager = get_server_manager()
+            manager.start_health_check()
+        except Exception:
+            pass  # non-critical — health check is optional
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

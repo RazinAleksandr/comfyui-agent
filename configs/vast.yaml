@@ -8,6 +8,7 @@ remote_path: /workspace/comfyui-agent
 label: comfyui-agent
 ssh_key: ~/.ssh/id_ed25519
 geolocation: "" # empty = worldwide
+health_check_interval: 120 # seconds between background server health checks (0 = disabled)
 extra_filters:
   inet_down: { "gte": 4000 } # min 500 Mbps download
   num_gpus: { "eq": 1 }

@@ -1,13 +1,14 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../components/ui/dialog";
 import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobPoller } from "../api/hooks";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { api } from "../api/client";
-import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob } from "../api/types";
+import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo } from "../api/types";
 import {
   ArrowLeft,
   Download,
@@ -37,6 +38,7 @@ import {
   Zap,
   Server,
   SkipForward,
+  Power,
 } from "lucide-react";
 import { Progress } from "../components/ui/progress";
 import { Separator } from "../components/ui/separator";
@@ -104,6 +106,46 @@ function isVideoUrl(url: string) {
   return /\.(mp4|webm|mov|mkv)$/i.test(url);
 }
 
+function VideoPlayerModal({
+  url,
+  title,
+  open,
+  onClose,
+}: {
+  url: string;
+  title: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (!open && videoRef.current) {
+      videoRef.current.pause();
+    }
+  }, [open]);
+
+  const filename = url.split("/").pop() ?? url;
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription className="font-mono text-xs truncate">{filename}</DialogDescription>
+        </DialogHeader>
+        <video
+          ref={videoRef}
+          src={url}
+          controls
+          autoPlay
+          className="w-full max-h-[80vh] rounded-lg bg-black"
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MediaThumb({ src, alt, className }: { src: string; alt: string; className?: string }) {
   if (!src) {
     return (
@@ -130,9 +172,18 @@ function MediaThumb({ src, alt, className }: { src: string; alt: string; classNa
   return <img src={src} alt={alt} className={className} />;
 }
 
-function VideoCard({ video, stageKey }: { video: VideoPreview; stageKey: string }) {
+function VideoCard({ video, stageKey, onPlay }: { video: VideoPreview; stageKey: string; onPlay?: (url: string, title: string) => void }) {
+  const handleClick = () => {
+    if (onPlay && video.thumbnail && isVideoUrl(video.thumbnail)) {
+      onPlay(video.thumbnail, video.title);
+    }
+  };
+
   return (
-    <div className="flex-shrink-0 w-40 rounded-xl overflow-hidden bg-slate-900 shadow-sm hover:shadow-md transition-shadow group cursor-pointer border border-slate-200">
+    <div
+      className="flex-shrink-0 w-40 rounded-xl overflow-hidden bg-slate-900 shadow-sm hover:shadow-md transition-shadow group cursor-pointer border border-slate-200"
+      onClick={handleClick}
+    >
       <div className="relative w-full" style={{ aspectRatio: "9/16" }}>
         <MediaThumb
           src={video.thumbnail}
@@ -182,7 +233,7 @@ function VideoCard({ video, stageKey }: { video: VideoPreview; stageKey: string 
   );
 }
 
-function GenerationVideoCard({ video }: { video: VideoPreview }) {
+function GenerationVideoCard({ video, onPlay }: { video: VideoPreview; onPlay?: (url: string, title: string) => void }) {
   const steps = video.generation_steps;
   const stepLabels = ["Raw", "Refined", "Upscaled", "Post"];
   const stepThumbs = steps ? [steps.raw, steps.refined, steps.upscaled, steps.postprocessed] : [];
@@ -191,7 +242,16 @@ function GenerationVideoCard({ video }: { video: VideoPreview }) {
     <div className="flex-shrink-0 w-72 rounded-xl overflow-hidden border border-slate-200 bg-slate-900 shadow-sm hover:shadow-md transition-shadow">
       <div className="grid grid-cols-2 gap-0.5 bg-slate-700 p-0.5">
         {stepThumbs.map((thumb, i) => (
-          <div key={i} className="relative group cursor-pointer overflow-hidden" style={{ aspectRatio: "9/16" }}>
+          <div
+            key={i}
+            className="relative group cursor-pointer overflow-hidden"
+            style={{ aspectRatio: "9/16" }}
+            onClick={() => {
+              if (onPlay && thumb && isVideoUrl(thumb)) {
+                onPlay(thumb, `${video.title} - ${stepLabels[i]}`);
+              }
+            }}
+          >
             <img src={thumb} alt={stepLabels[i]} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
             <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="w-7 h-7 rounded-full bg-white/90 flex items-center justify-center">
@@ -579,7 +639,7 @@ function GenerationSummaryDetails({ details }: { details: Record<string, unknown
   );
 }
 
-function StageVideoPreview({ videos, stageKey, totalCount }: { videos: VideoPreview[]; stageKey: string; totalCount?: number }) {
+function StageVideoPreview({ videos, stageKey, totalCount, onPlay }: { videos: VideoPreview[]; stageKey: string; totalCount?: number; onPlay?: (url: string, title: string) => void }) {
   if (!videos || videos.length === 0) return null;
 
   const shownCount = videos.length;
@@ -600,8 +660,8 @@ function StageVideoPreview({ videos, stageKey, totalCount }: { videos: VideoPrev
       </div>
       <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
         {stageKey === "generation"
-          ? videos.map((v) => <GenerationVideoCard key={v.id} video={v} />)
-          : videos.map((v) => <VideoCard key={v.id} video={v} stageKey={stageKey} />)
+          ? videos.map((v) => <GenerationVideoCard key={v.id} video={v} onPlay={onPlay} />)
+          : videos.map((v) => <VideoCard key={v.id} video={v} stageKey={stageKey} onPlay={onPlay} />)
         }
         {remaining > 0 && (
           <div className="flex-shrink-0 w-40 rounded-xl border border-dashed border-slate-300 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 transition-colors" style={{ minHeight: "200px" }}>
@@ -635,12 +695,14 @@ function ReviewPanel({
   influencerId,
   runId,
   onComplete,
+  onPlay,
 }: {
   vlmVideos: VideoPreview[];
   vlmAccepted: VlmAccepted[];
   influencerId: string;
   runId: string;
   onComplete: () => void;
+  onPlay?: (url: string, title: string) => void;
 }) {
   const [items, setItems] = useState<ReviewItem[]>(() =>
     vlmVideos.map((v) => {
@@ -708,12 +770,29 @@ function ReviewPanel({
             }`}
           >
             {/* Thumbnail */}
-            <div className="flex-shrink-0 w-24 rounded-lg overflow-hidden" style={{ aspectRatio: "9/16" }}>
-              <MediaThumb
-                src={item.thumbnail}
-                alt={item.file_name}
-                className="w-full h-full object-cover"
-              />
+            <div
+              className="flex-shrink-0 w-24 rounded-lg overflow-hidden cursor-pointer group/thumb"
+              style={{ aspectRatio: "9/16" }}
+              onClick={() => {
+                if (onPlay && item.thumbnail && isVideoUrl(item.thumbnail)) {
+                  onPlay(item.thumbnail, item.file_name);
+                }
+              }}
+            >
+              <div className="relative w-full h-full">
+                <MediaThumb
+                  src={item.thumbnail}
+                  alt={item.file_name}
+                  className="w-full h-full object-cover"
+                />
+                {item.thumbnail && isVideoUrl(item.thumbnail) && (
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity">
+                    <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center">
+                      <Play className="w-3 h-3 text-slate-900 ml-0.5" fill="currentColor" />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Info + controls */}
@@ -803,6 +882,7 @@ function ReviewPanel({
 function formatProgress(progress: Record<string, unknown>): string {
   const stage = progress.stage as string | undefined;
   if (!stage) return "";
+  if (stage === "queued") return "Waiting in queue...";
   if (stage === "uploading") return "Uploading files...";
   if (stage === "downloading") return "Downloading results...";
   if (stage === "executing") {
@@ -867,17 +947,18 @@ function GenerationPanel({
   selectedVideoUrls,
   onJobStarted,
   existingJobs,
+  onPlayVideo,
 }: {
   reviewVideos: ReviewVideo[];
   influencerId: string;
   selectedVideoUrls: Record<string, string>;
   onJobStarted: () => void;
   existingJobs?: GenerationJob[];
+  onPlayVideo?: (url: string, title: string) => void;
 }) {
   const [serverState, setServerState] = useState<"unknown" | "checking" | "offline" | "starting" | "running">("unknown");
   const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
   const [videoJobs, setVideoJobs] = useState<Record<string, string>>(() => {
-    // Initialize from persisted generation manifest jobs
     const initial: Record<string, string> = {};
     for (const job of existingJobs ?? []) {
       initial[job.file_name] = job.job_id;
@@ -886,6 +967,11 @@ function GenerationPanel({
   });
   const [error, setError] = useState<string | null>(null);
   const [serverJobId, setServerJobId] = useState<string | null>(null);
+  const [serverId, setServerId] = useState<string | null>(null);
+  const [serverCost, setServerCost] = useState<number | null>(null);
+  const [autoShutdown, setAutoShutdown] = useState(false);
+  const [allocation, setAllocation] = useState<AllocationInfo | null>(null);
+  const [shuttingDown, setShuttingDown] = useState(false);
 
   const approvedVideos = reviewVideos.filter((v) => v.approved);
   const { job: serverJob } = useJobPoller(serverJobId);
@@ -894,13 +980,24 @@ function GenerationPanel({
   if (serverJob?.status === "completed" && serverState === "starting") {
     setServerState("running");
     setServerJobId(null);
+    // Refresh allocation info
+    api.getAllocationInfo(influencerId).then(setAllocation).catch(() => {});
   }
 
-  // Auto-check server status on mount — also restore running startup job
+  // Auto-check server status on mount
   useEffect(() => {
-    api.serverStatus().then((s) => {
+    api.getAllocationInfo(influencerId).then((info) => {
+      setAllocation(info);
+      if (info.server_id) {
+        setServerId(info.server_id);
+      }
+    }).catch(() => {});
+
+    api.serverStatus(influencerId).then((s) => {
+      if (s.server_id) setServerId(s.server_id);
+      if (s.dph_total) setServerCost(s.dph_total);
+      if (s.auto_shutdown !== undefined) setAutoShutdown(s.auto_shutdown);
       if (s.startup_job_id && s.startup_job_status && ["pending", "running"].includes(s.startup_job_status)) {
-        // Server startup job is still running — poll it
         setServerState("starting");
         setServerJobId(s.startup_job_id);
       } else if (s.status === "running") {
@@ -909,23 +1006,54 @@ function GenerationPanel({
         setServerState("offline");
       }
     }).catch(() => setServerState("offline"));
-  }, []);
+  }, [influencerId]);
 
   const checkAndStartServer = async () => {
     setError(null);
     setServerState("checking");
     try {
-      const status = await api.serverStatus();
+      const status = await api.serverStatus(influencerId);
       if (status.status === "running") {
         setServerState("running");
+        if (status.server_id) setServerId(status.server_id);
+        if (status.dph_total) setServerCost(status.dph_total);
       } else {
         setServerState("starting");
-        const { job_id } = await api.serverUp();
+        const { job_id, server_id } = await api.serverUp("wan_animate", influencerId);
         setServerJobId(job_id);
+        setServerId(server_id);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setServerState("offline");
+    }
+  };
+
+  const handleShutdown = async () => {
+    if (!serverId) return;
+    setShuttingDown(true);
+    setError(null);
+    try {
+      await api.shutdownServer(serverId);
+      setServerState("offline");
+      setServerId(null);
+      setServerCost(null);
+      setAllocation(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShuttingDown(false);
+    }
+  };
+
+  const handleAutoShutdownToggle = async () => {
+    if (!serverId) return;
+    const newVal = !autoShutdown;
+    try {
+      await api.setAutoShutdown(serverId, newVal);
+      setAutoShutdown(newVal);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -951,14 +1079,13 @@ function GenerationPanel({
     for (let i = 0; i < approvedVideos.length; i++) {
       await runGeneration(approvedVideos[i], i);
     }
-    // Only refetch after ALL generations are submitted
     onJobStarted();
   };
 
   return (
     <div className="space-y-4">
       {/* Server status */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border ${
           serverState === "running"
             ? "bg-green-50 border-green-200"
@@ -978,6 +1105,9 @@ function GenerationPanel({
             {serverState === "running" && "GPU Server: Running"}
           </span>
           {serverState === "starting" && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
+          {serverState === "running" && serverCost !== null && (
+            <span className="text-xs text-green-700 ml-1">(${serverCost.toFixed(3)}/hr)</span>
+          )}
         </div>
 
         {(serverState === "unknown" || serverState === "offline") && (
@@ -986,7 +1116,46 @@ function GenerationPanel({
             {serverState === "offline" ? "Start Server" : "Check & Start"}
           </Button>
         )}
+
+        {serverState === "running" && serverId && (
+          <Button
+            onClick={handleShutdown}
+            variant="outline"
+            size="sm"
+            className="gap-2 text-red-600 border-red-200 hover:bg-red-50"
+            disabled={shuttingDown}
+          >
+            {shuttingDown ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Power className="w-3.5 h-3.5" />
+            )}
+            Shut Down Server
+          </Button>
+        )}
       </div>
+
+      {/* Auto-shutdown toggle */}
+      {serverState === "running" && serverId && (
+        <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={autoShutdown}
+            onChange={handleAutoShutdownToggle}
+            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          />
+          Auto-shutdown after generation completes
+        </label>
+      )}
+
+      {/* Server busy message */}
+      {allocation && allocation.has_own_server && allocation.server_busy && serverState === "running" && (
+        <div className="flex items-center gap-2 text-amber-700 text-sm bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+          <AlertCircle className="w-4 h-4" />
+          Server is busy with {allocation.active_jobs} active job{allocation.active_jobs !== 1 ? "s" : ""}.
+          {allocation.can_borrow && " A free server is available to borrow."}
+        </div>
+      )}
 
       {/* Approved videos for generation */}
       {serverState === "running" && (
@@ -1006,9 +1175,7 @@ function GenerationPanel({
               const jobId = videoJobs[video.file_name];
               const isGenerating = generatingIdx === idx;
               const hasJob = !!jobId;
-              // Check persisted status from existingJobs for jobs lost on restart
               const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
-              // If local videoJobs has a different job_id than existingJobs, it's a retry — treat as running
               const isRetried = hasJob && existingJob && jobId !== existingJob.job_id;
               const persistedStatus = isRetried ? "running" : existingJob?.status;
               const isDeadJob = hasJob && !persistedStatus && !isRetried;
@@ -1029,6 +1196,23 @@ function GenerationPanel({
                       <p className="text-xs text-slate-500 truncate italic">"{video.prompt}"</p>
                     )}
                     {isRunningJob && <GenerationJobProgress jobId={jobId} />}
+                    {isCompletedJob && existingJob?.outputs && existingJob.outputs.length > 0 && (
+                      <div className="flex gap-2 mt-2">
+                        {existingJob.outputs.map((out: { url: string; name: string }, oi: number) => (
+                          <div
+                            key={oi}
+                            className="relative w-16 h-28 rounded overflow-hidden bg-slate-900 cursor-pointer group border border-slate-200 hover:border-green-400 transition-colors"
+                            onClick={() => onPlayVideo?.(out.url, `${out.name} — ${video.file_name}`)}
+                          >
+                            <video src={out.url} preload="metadata" muted className="w-full h-full object-cover" onLoadedData={(e) => { if (e.currentTarget.duration > 1) e.currentTarget.currentTime = 1; }} />
+                            <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <Play className="w-4 h-4 text-white" fill="white" />
+                            </div>
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] text-center py-0.5 capitalize">{out.name}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {isCompletedJob ? (
                     <Badge className="bg-green-100 text-green-800 border-green-200 flex-shrink-0">
@@ -1089,6 +1273,12 @@ export default function TaskDetailPage() {
     refetchTask();
     refetchRaw();
   }, [refetchTask, refetchRaw]);
+
+  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+
+  const handlePlayVideo = useCallback((url: string, title: string) => {
+    setPlayingVideo({ url, title });
+  }, []);
 
   if (loadingTask || loadingInf) {
     return (
@@ -1274,6 +1464,7 @@ export default function TaskDetailPage() {
                             videos={stage.videos}
                             stageKey={key}
                             totalCount={stage.items_count}
+                            onPlay={handlePlayVideo}
                           />
                         )}
                       </>
@@ -1287,6 +1478,7 @@ export default function TaskDetailPage() {
                         influencerId={avatarId!}
                         runId={runId!}
                         onComplete={refetchAll}
+                        onPlay={handlePlayVideo}
                       />
                     )}
 
@@ -1308,6 +1500,7 @@ export default function TaskDetailPage() {
                         }
                         onJobStarted={refetchAll}
                         existingJobs={rawRun?.generation?.jobs}
+                        onPlayVideo={handlePlayVideo}
                       />
                     )}
 
@@ -1339,6 +1532,15 @@ export default function TaskDetailPage() {
           })}
         </div>
       </div>
+
+      {playingVideo && (
+        <VideoPlayerModal
+          url={playingVideo.url}
+          title={playingVideo.title}
+          open={true}
+          onClose={() => setPlayingVideo(null)}
+        />
+      )}
     </div>
   );
 }

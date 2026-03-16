@@ -1,24 +1,21 @@
 {
-  "id": 1039279481,
+  "id": 594649009,
   "influencer_id": "emi2souls",
   "name": "Emi Noir",
   "reference_image_path": "influencers/emi2souls/reference.png",
-  "description": "Alt-aesthetic lifestyle creator with heterochromia (green and blue eyes) who wears decorative contact lenses (cat eyes, sharingan) as a signature style. Content focuses on gym/fitness, gaming (League of Legends), and tea ceremony aesthetics. Dark feminine energy, confident but chill vibe, mix of edgy and cozy content.",
+  "description": "Alt-aesthetic lifestyle creator with a calm but mysterious vibe. Emi Noir is known for her striking heterochromia \u2014 one blue eye and one green. She shares gym routines, cozy gaming nights, and relaxing tea ceremony moments. Her content blends soft aesthetics, quiet confidence, and a touch of anime-inspired mystery.",
   "hashtags": [
-    "fitnessgirl",
+    "fitness",
     "gymgirl",
-    "gamergirl",
-    "leagueoflegends",
-    "teaceremony",
+    "gaming",
     "altgirl",
     "heterochromia",
-    "animeeyes",
-    "cateyes",
-    "cosplaylenses",
-    "edgyaesthetic",
-    "darkfeminine"
+    "animeaesthetic",
+    "cozyvibes",
+    "lifestyle",
+    "gamerlife"
   ],
-  "video_suggestions_requirement": "Do not use videos with close-up eye shots showing natural eyes without lenses. Avoid crowded group scenes without a clear main subject. No blurred or extreme low-light footage. No content unrelated to fitness, gaming, or aesthetic lifestyle. Avoid clips where the face is mostly hidden or heavily occluded.",
-  "created_at": "2026-03-13T09:39:54.108870+00:00",
-  "updated_at": "2026-03-13T09:39:54.108870+00:00"
+  "video_suggestions_requirement": "Avoid loud party scenes, crowded events, aggressive behavior, or overly chaotic environments.  AVOID videos with mens.\nPrefer calm aesthetic settings such as gyms, gaming setups, cozy rooms, cafes, tea ceremonies, or soft lifestyle scenes. \nFocus on relaxed, stylish, or slightly mysterious vibes.",
+  "created_at": "2026-03-16T10:03:55.948667+00:00",
+  "updated_at": "2026-03-16T10:41:58.934085+00:00"
 }

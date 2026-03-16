@@ -91,6 +91,12 @@ export interface ReviewData {
   videos: ReviewVideo[];
 }
 
+export interface GenerationOutput {
+  path: string;
+  url: string;
+  name: string;
+}
+
 export interface GenerationJob {
   file_name: string;
   job_id: string;
@@ -98,6 +104,7 @@ export interface GenerationJob {
   status?: string;
   progress?: Record<string, unknown>;
   error?: string;
+  outputs?: GenerationOutput[];
 }
 
 export interface GenerationData {
@@ -141,6 +148,7 @@ export interface GenerationRequest {
 
 export interface ServerStatus {
   status: "running" | "offline";
+  server_id?: string;
   instance_id: number | null;
   ssh_host: string | null;
   ssh_port: number | null;
@@ -149,6 +157,31 @@ export interface ServerStatus {
   actual_status: string | null;
   startup_job_id: string | null;
   startup_job_status: string | null;
+  influencer_id?: string | null;
+  auto_shutdown?: boolean;
+  active_jobs?: number;
+}
+
+export interface ServerInfo {
+  server_id: string;
+  instance_id: number | null;
+  influencer_id: string | null;
+  ssh_host: string | null;
+  ssh_port: number | null;
+  dph_total: number | null;
+  workflow: string;
+  created_at: string;
+  auto_shutdown: boolean;
+  active_jobs: number;
+}
+
+export interface AllocationInfo {
+  has_own_server: boolean;
+  server_id: string | null;
+  server_busy: boolean;
+  active_jobs: number;
+  can_borrow: boolean;
+  borrow_server_id: string | null;
 }
 
 // ---- Presentation types (used by page components) ----

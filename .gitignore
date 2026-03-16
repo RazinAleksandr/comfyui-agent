@@ -35,6 +35,7 @@ output/
 
 # VastAI state
 .vast-instance.json
+.vast-*
 
 # Telegram bot data
 *.session

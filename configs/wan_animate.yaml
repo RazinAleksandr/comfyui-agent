@@ -173,11 +173,6 @@ characters:
     lora_low: emi2soul_low_noise_epoch2.safetensors
     lora_high_strength: 0.89
     lora_low_strength: 0.89
-  nolora:
-    lora_high: ""
-    lora_low: ""
-    lora_high_strength: 0
-    lora_low_strength: 0
 
 # Override node parameters for ALL runs
 overrides:

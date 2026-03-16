@@ -48,6 +48,17 @@ async def get_influencer(influencer_id: str) -> InfluencerOut:
     return _to_out(record)
 
 
+@router.delete("/{influencer_id}")
+async def delete_influencer(influencer_id: str) -> dict:
+    """Delete an influencer and all associated data."""
+    store = get_store()
+    record = store.load_influencer(influencer_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    store.delete_influencer(influencer_id)
+    return {"deleted": influencer_id}
+
+
 @router.put("/{influencer_id}")
 async def upsert_influencer(influencer_id: str, body: InfluencerUpsertRequest) -> InfluencerOut:
     store = get_store()
@@ -85,7 +96,9 @@ def _safe_extension(filename: str) -> str:
 def _to_out(record) -> InfluencerOut:
     profile_image_url = None
     if record.reference_image_path:
-        profile_image_url = "/files/" + quote(record.reference_image_path, safe="/")
+        # Add cache-busting param so browser reloads after image changes
+        ts = int(record.updated_at.timestamp()) if record.updated_at else 0
+        profile_image_url = "/files/" + quote(record.reference_image_path, safe="/") + f"?v={ts}"
     return InfluencerOut(
         influencer_id=record.influencer_id,
         name=record.name,

@@ -14,6 +14,7 @@ _store: FilesystemStore | None = None
 _job_manager: JobManager | None = None
 _seed_dir: Path | None = None
 _vast_service = None  # VastAgentService (lazy, avoids import on GPU-less envs)
+_server_manager = None  # ServerManager (lazy)
 
 
 def init_deps(
@@ -63,3 +64,34 @@ def get_vast_service():
             from vast_agent.service import VastAgentService
             _vast_service = VastAgentService()
     return _vast_service
+
+
+def _job_checker(server_id: str) -> int:
+    """Count active generation jobs for a given server_id."""
+    jm = get_job_manager()
+    active = [
+        j for j in jm.find_jobs(type="generation")
+        if j.status in ("pending", "running") and j.tags.get("server_id") == server_id
+    ]
+    return len(active)
+
+
+def get_server_manager():
+    """Lazy-initialized ServerManager singleton."""
+    global _server_manager
+    if _server_manager is None:
+        from vast_agent.config import VastConfig
+        from vast_agent.manager import ServerManager
+        from vast_agent.registry import ServerRegistry
+
+        project_root = Path(__file__).resolve().parents[2]
+        config_path = project_root / "configs" / "vast.yaml"
+        config = VastConfig.from_yaml(config_path) if config_path.exists() else VastConfig()
+        registry = ServerRegistry(project_root / ".vast-registry.json")
+        _server_manager = ServerManager(
+            registry=registry,
+            config=config,
+            project_root=project_root,
+            job_checker=_job_checker,
+        )
+    return _server_manager

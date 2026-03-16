@@ -6,6 +6,8 @@ Manages GPU server lifecycle on VastAI and executes `comfy-pipeline` commands re
 src/vast_agent/
   cli.py        Click CLI entry point (thin wrapper over service)
   service.py    VastAgentService — programmatic interface used by API
+  manager.py    ServerManager — multi-server allocation and lifecycle
+  registry.py   ServerRegistry — persistent server-to-influencer mapping
   config.py     YAML config loading
   vastai.py     VastAI REST API wrapper
   remote.py     SSH/rsync operations
@@ -154,20 +156,83 @@ ssh_key: ~/.ssh/id_rsa       # must match key registered on VastAI
 
 Common GPU names: `RTX 5090`, `RTX 4090`, `RTX 3090`, `RTX A6000`, `A100 SXM4`, `A100 PCIE`, `H100 SXM5`, `L40S`.
 
-## State Tracking
+## Multi-Server Management
 
-Instance state persisted in `.vast-instance.json`:
+The system supports multiple concurrent VastAI servers, each mapped to an influencer. This is managed by `ServerManager` and persisted in `.vast-registry.json`.
+
+### Server Registry
+
+`.vast-registry.json` replaces the old `.vast-instance.json`:
 
 ```json
 {
-  "instance_id": 12345,
-  "ssh_host": "ssh123.vast.ai",
-  "ssh_port": 10600,
-  "dph_total": 0.449
+  "servers": {
+    "srv_32921955": {
+      "instance_id": 32921955,
+      "ssh_host": "ssh5.vast.ai",
+      "ssh_port": 11954,
+      "dph_total": 0.414,
+      "influencer_id": "emi2soul",
+      "workflow": "wan_animate",
+      "created_at": "2026-03-16T10:00:00Z",
+      "auto_shutdown": false
+    }
+  }
 }
 ```
 
-`dph_total` is the hourly cost ($/hr) at rent time, used by the Telegram bot for per-generation cost tracking. Created by `rent`/`up`, deleted by `down`/`destroy`.
+Old `.vast-instance.json` files are auto-migrated to the registry on first startup.
+
+### Smart Allocation
+
+When a generation request arrives for influencer X:
+
+1. **Own server** — check if X has a running server → use it
+2. **Borrow** — check if any other influencer's server is free (no active jobs) → borrow it
+3. **Create new** — rent a new VastAI instance for X
+
+### Auto-Shutdown
+
+Each server has an `auto_shutdown` flag. When enabled, the server is automatically destroyed after all generation jobs on it complete. Toggled via:
+
+```
+POST /api/v1/generation/server/{server_id}/auto-shutdown
+{"enabled": true}
+```
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/generation/servers` | List all servers with status and active jobs |
+| `GET` | `/generation/server/allocate?influencer_id=...` | Check allocation for an influencer |
+| `POST` | `/generation/server/up` | Allocate/start a server (with `influencer_id`) |
+| `POST` | `/generation/server/{id}/down` | Shut down a specific server |
+| `POST` | `/generation/server/{id}/auto-shutdown` | Toggle auto-shutdown |
+
+### ServerManager API
+
+```python
+from vast_agent.manager import ServerManager
+
+manager = get_server_manager()
+
+# Allocate a server for an influencer
+server_id, service = manager.allocate_server("emi2soul", "wan_animate")
+
+# List all servers
+servers = manager.list_servers()
+
+# Shut down
+manager.shutdown_server(server_id)
+
+# Auto-shutdown after jobs complete
+manager.set_auto_shutdown(server_id, True)
+```
+
+## Legacy State Tracking
+
+The CLI still uses per-server state files (`.vast-server-{id}.json`) for backward compatibility. These are created by `ServerManager` and managed automatically.
 
 ## Internal Flow
 

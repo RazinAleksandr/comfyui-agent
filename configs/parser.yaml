@@ -1,7 +1,10 @@
 # Parser configuration
 # Use ${ENV_VAR} syntax to reference environment variables
 
-default_source: seed
+# Default source per platform (used by frontend and API when source not specified)
+default_sources:
+  tiktok: tiktok_custom
+  instagram: apify
 
 # Apify (paid scraping API)
 apify_token: ${APIFY_TOKEN}

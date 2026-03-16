@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,7 +25,12 @@ class PipelineRunnerService:
         self.ingest = TrendIngestService(config=config, seed_dir=seed_dir)
         self.downloader = TrendDownloadService(config=config, downloads_dir=store.downloads_dir)
 
-    def run(self, request: PipelineRunRequest) -> PipelineRunOut:
+    def run(
+        self,
+        request: PipelineRunRequest,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> PipelineRunOut:
+        """Run the full pipeline. Optionally report stage progress via *progress_callback*."""
         influencer = self.store.load_influencer(request.influencer_id)
         if influencer is None:
             raise ValueError(f"Influencer '{request.influencer_id}' not found")
@@ -38,12 +44,58 @@ class PipelineRunnerService:
         if request.vlm.enabled and not request.filter.enabled:
             raise ValueError("Gemini stage requires filter stage to be enabled.")
 
+        # --- progress tracking ---------------------------------------------------
+        # Accumulate items across platforms so multi-platform runs show totals
+        stage_totals: dict[str, int] = {"ingestion": 0, "download": 0, "filter": 0, "vlm": 0}
+        progress: dict = {
+            "current_stage": None,
+            "platforms_done": 0,
+            "platforms_total": len(enabled_platforms),
+            "stages": {
+                "ingestion": {"status": "pending", "items": 0},
+                "download": {"status": "pending", "items": 0},
+                "filter": {"status": "pending", "items": 0},
+                "vlm": {"status": "pending", "items": 0},
+            },
+        }
+
+        def _report(stage: str, status: str, **extra: object) -> None:
+            if status == "running":
+                progress["current_stage"] = stage
+                progress["stages"][stage]["status"] = "running"
+            elif status == "completed":
+                items = extra.get("items", 0) or 0
+                stage_totals[stage] += items
+                progress["stages"][stage] = {"status": "completed", "items": stage_totals[stage]}
+            else:
+                progress["stages"][stage]["status"] = status
+            if progress_callback:
+                progress_callback(dict(progress))
+
+        # --- run ----------------------------------------------------------------
         started_at = datetime.now(UTC)
         stamp = started_at.strftime("%Y%m%d_%H%M%S")
         base_dir = self.store.influencer_pipeline_runs_dir(request.influencer_id) / stamp
         base_dir.mkdir(parents=True, exist_ok=True)
 
         platform_outputs: list[PipelinePlatformRunOut] = []
+
+        # Save initial manifest so the frontend can see the run immediately
+        def _save_manifest() -> None:
+            self.store.save_pipeline_manifest(
+                request.influencer_id,
+                stamp,
+                {
+                    "influencer_id": request.influencer_id,
+                    "started_at": started_at.isoformat(),
+                    "base_dir": str(base_dir.resolve()),
+                    "platforms": [item.model_dump(mode="json") for item in platform_outputs],
+                    "request": request.model_dump(mode="json"),
+                },
+            )
+
+        _save_manifest()  # create empty manifest so the run appears in the list
+
         for platform, cfg in request.platforms.items():
             platform_name = platform.lower().strip()
             if not cfg.enabled:
@@ -76,25 +128,16 @@ class PipelineRunnerService:
                 selected_dir=selected_dir,
                 rejected_dir=rejected_dir,
                 stamp=stamp,
+                progress_report=_report,
             )
             platform_outputs.append(platform_output)
+            _save_manifest()  # update after each platform completes
 
         result = PipelineRunOut(
             influencer_id=request.influencer_id,
             started_at=started_at,
             base_dir=str(base_dir.resolve()),
             platforms=platform_outputs,
-        )
-        self.store.save_pipeline_manifest(
-            request.influencer_id,
-            stamp,
-            {
-                "influencer_id": request.influencer_id,
-                "started_at": started_at.isoformat(),
-                "base_dir": str(base_dir.resolve()),
-                "platforms": [item.model_dump(mode="json") for item in platform_outputs],
-                "request": request.model_dump(mode="json"),
-            },
         )
         return result
 
@@ -115,7 +158,13 @@ class PipelineRunnerService:
         selected_dir: Path,
         rejected_dir: Path,
         stamp: str,
+        progress_report: Callable[..., None] | None = None,
     ) -> PipelinePlatformRunOut:
+        def _report(stage: str, status: str, **extra: object) -> None:
+            if progress_report:
+                progress_report(stage, status, platform=platform_name, **extra)
+
+        _report("ingestion", "running")
         collected = self.ingest.collect_raw(
             platforms=[platform_name],
             limit_per_platform=cfg.limit,
@@ -123,10 +172,12 @@ class PipelineRunnerService:
             selectors={platform_name: selector_payload},
         )
         videos = collected.get(platform_name, [])
+        _report("ingestion", "completed", items=len(videos))
 
         download_records: list[dict] = []
         download_counts: dict[str, int] = {}
         if request.download.enabled:
+            _report("download", "running")
             download_records = self.downloader.download_raw_videos(
                 platform=platform_name,
                 videos=videos,
@@ -134,10 +185,13 @@ class PipelineRunnerService:
                 download_dir=str(download_dir),
             )
             download_counts = dict(Counter(record["status"] for record in download_records))
+            _report("download", "completed", items=download_counts.get("downloaded", 0))
 
         candidate_report_path = None
         has_downloads = download_counts.get("downloaded", 0) > 0
+        filter_accepted = 0
         if request.filter.enabled and has_downloads:
+            _report("filter", "running")
             try:
                 report, report_path = run_candidate_filter(
                     CandidateFilterConfig(
@@ -151,13 +205,16 @@ class PipelineRunnerService:
                     )
                 )
                 candidate_report_path = str(report_path.resolve())
+                filter_accepted = report.get("accepted", 0) if isinstance(report, dict) else 0
             except RuntimeError:
                 pass  # no videos to filter — continue gracefully
+            _report("filter", "completed", items=filter_accepted)
 
         accepted = None
         rejected = None
         vlm_summary_path = None
         if request.vlm.enabled and candidate_report_path is not None:
+            _report("vlm", "running")
             run_selector(
                 SelectorRunConfig(
                     input_dir=filtered_dir,
@@ -189,6 +246,7 @@ class PipelineRunnerService:
                 accepted = int(payload.get("accepted", 0))
                 rejected = int(payload.get("rejected", 0))
                 vlm_summary_path = str(summary_file.resolve())
+            _report("vlm", "completed", items=accepted or 0)
 
         manifest_payload = {
             "platform": platform_name,
