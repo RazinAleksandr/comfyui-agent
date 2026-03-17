@@ -94,6 +94,99 @@ class ServerManager:
         return svc
 
     # ------------------------------------------------------------------
+    # Instance discovery — find running VastAI instances on startup
+    # ------------------------------------------------------------------
+
+    def discover_instances(self) -> list[str]:
+        """Query VastAI API for all running instances and register any unknown ones.
+
+        Called on startup to recover from server restarts. If our DB has no
+        record of a running VastAI instance, we register it so the frontend
+        can see it and use it for generation.
+
+        Returns list of newly discovered server IDs.
+        """
+        if self._is_mock():
+            return []
+
+        try:
+            from vast_agent.vastai import VastClient
+            client = VastClient()
+            instances = client.list_instances()
+        except Exception as exc:
+            logger.warning("Failed to discover VastAI instances: %s", exc)
+            return []
+
+        if not instances:
+            return []
+
+        # Get known instance IDs from DB
+        known_servers = self._registry.list_servers_sync()
+        known_instance_ids = {
+            entry.instance_id for entry in known_servers.values()
+            if entry.instance_id
+        }
+
+        discovered = []
+        for inst in instances:
+            if inst.instance_id in known_instance_ids:
+                continue  # Already known
+
+            # New instance — register it
+            server_id = f"srv_{inst.instance_id}"
+            entry = ServerEntry(
+                instance_id=inst.instance_id,
+                ssh_host=inst.ssh_host,
+                ssh_port=inst.ssh_port,
+                dph_total=inst.dph_total,
+                workflow="wan_animate",
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            self._registry.add_server_sync(server_id, entry)
+
+            # Also create the state file so VastAgentService can use it
+            import json as _json
+            state_file = self._project_root / f".vast-server-{server_id}.json"
+            state = {
+                "instance_id": inst.instance_id,
+                "ssh_host": inst.ssh_host,
+                "ssh_port": inst.ssh_port,
+                "dph_total": inst.dph_total,
+            }
+            state_file.write_text(_json.dumps(state, indent=2) + "\n")
+
+            discovered.append(server_id)
+            logger.info(
+                "Discovered VastAI instance %s (host=%s, status=%s) → registered as %s",
+                inst.instance_id, inst.ssh_host, inst.actual_status, server_id,
+            )
+
+        # Also clean up stale .vast-instance.json (legacy single-server file)
+        legacy_file = self._project_root / ".vast-instance.json"
+        if legacy_file.exists():
+            try:
+                import json as _json
+                old = _json.loads(legacy_file.read_text())
+                old_id = old.get("instance_id")
+                # If this instance is now registered in DB, remove the legacy file
+                all_servers = self._registry.list_servers_sync()
+                for entry in all_servers.values():
+                    if entry.instance_id == old_id:
+                        legacy_file.unlink(missing_ok=True)
+                        logger.info("Cleaned up legacy .vast-instance.json (instance %s now in DB)", old_id)
+                        break
+                else:
+                    # Instance not in our registry and not discovered — might be destroyed
+                    # Leave the file for now, health check will clean it up
+                    pass
+            except Exception:
+                pass
+
+        if discovered:
+            logger.info("Discovered %d new VastAI instances: %s", len(discovered), discovered)
+        return discovered
+
+    # ------------------------------------------------------------------
     # Health check — verify registry against VastAI API
     # ------------------------------------------------------------------
 
@@ -261,7 +354,33 @@ class ServerManager:
         return result
 
     def shutdown_server(self, server_id: str) -> None:
-        """Shut down and remove a server."""
+        """Shut down and remove a server. Fails all active jobs on it."""
+        # Fail all active jobs on this server before destroying it
+        try:
+            import sqlite3
+            from api.database import Database
+            from api.deps import get_db
+            db = get_db()
+            now = datetime.now(UTC).isoformat()
+            conn = sqlite3.connect(str(db._db_path))
+            try:
+                conn.execute(
+                    "UPDATE jobs SET status = 'failed', error = 'GPU server shut down', "
+                    "completed_at = ? WHERE server_id = ? AND status IN ('pending', 'running')",
+                    [now, server_id],
+                )
+                conn.execute(
+                    "UPDATE generation_jobs SET status = 'failed', error = 'GPU server shut down', "
+                    "completed_at = ? WHERE server_id = ? AND status IN ('pending', 'running')",
+                    [now, server_id],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            logger.info("Failed active jobs for server %s", server_id)
+        except Exception as exc:
+            logger.warning("Could not fail jobs for server %s: %s", server_id, exc)
+
         svc = self.get_or_create_service(server_id)
         try:
             if svc.has_instance():

@@ -12,11 +12,13 @@ FastAPI API (port 8000)
 ├── /api/v1/influencers/*   influencer CRUD
 ├── /api/v1/generation/*    GPU server management + video generation
 ├── /api/v1/jobs/*          async job tracking
+├── /api/v1/events/stream   SSE real-time updates (job progress, state changes)
 ├── /files/*                static file serving (shared/ directory)
 └── /health
     │
+    ├── api/             database.py, db_store.py, events.py, job_manager.py, migrate.py
     ├── trend_parser/    ingest → download → filter → VLM scoring
-    ├── vast_agent/      VastAI GPU rental + multi-server management
+    ├── vast_agent/      VastAI GPU rental + multi-server management (db_registry.py)
     ├── comfy_pipeline/  ComfyUI workflow execution (runs on remote GPU)
     ├── isp_pipeline/    video postprocessing
     └── telegram_bot/    Telegram UI (legacy, still works)
@@ -28,9 +30,9 @@ FastAPI API (port 8000)
 
 - **Source dir**: `src/` — all Python code lives here. Use `PYTHONPATH=src` when running.
 - **Entry point**: `src/api/app.py:create_app()` — FastAPI factory.
-- **No database** — all data is filesystem JSON under `shared/`. `FilesystemStore` in `src/trend_parser/store.py`.
-- **Async jobs** — long-running ops use `JobManager` (in-memory). Jobs are tagged with `{type, influencer_id, server_id}` for lookup. Jobs don't survive server restarts.
-- **Progress reporting** — generation and pipeline jobs report progress via `progress_fn` callback injected by JobManager. Frontend polls `GET /jobs/{id}` every 2-3s.
+- **SQLite database** at `shared/studio.db` (WAL mode). Schema in `src/api/schema.sql`. Created automatically on first startup. `FilesystemStore` in `src/trend_parser/store.py` still handles file operations (video files, directories).
+- **Async jobs** — long-running ops use `PersistentJobManager` in `src/api/job_manager.py` (SQLite-backed). Jobs are tagged with `{type, influencer_id, server_id}` for lookup. Jobs survive server restarts — orphaned jobs are marked failed on startup.
+- **Progress reporting** — generation and pipeline jobs report progress via `progress_fn` callback injected by PersistentJobManager. Progress is buffered in memory and flushed to DB once per second. Frontend receives real-time updates via SSE at `/api/v1/events/stream`.
 - **Per-server locking** — only one generation runs at a time per GPU server (`threading.Lock` in ServerManager). Others show "Waiting in queue...".
 - **LoRA auto-apply** — character LoRAs from `configs/wan_animate.yaml` are auto-applied in `_do_generation` when `set_args` doesn't specify them.
 - **Config files**: `configs/parser.yaml` (parser), `configs/vast.yaml` (GPU), `configs/wan_animate.yaml` (workflow + character LoRAs).
@@ -46,15 +48,17 @@ FastAPI API (port 8000)
 - **API client**: `frontend/src/app/api/client.ts` — fetch-based, all endpoints.
 - **Types**: `frontend/src/app/api/types.ts` — must match backend Pydantic models.
 - **Mapper**: `frontend/src/app/api/mappers.ts` — converts `PipelineRun` → `Task` with 6 stages. Critical logic.
-- **Hooks**: `frontend/src/app/api/hooks.ts` — `useInfluencer`, `usePipelineRuns`, `useJobPoller`, etc.
+- **SSE client**: `frontend/src/app/api/sse.ts` — SSE connection singleton with auto-reconnect and exponential backoff.
+- **Hooks**: `frontend/src/app/api/hooks.ts` — `useInfluencer`, `usePipelineRuns`, `useJobSSE`, `useConnectionStatus`, etc.
 - **State persistence**: All UI state comes from the API. No localStorage. Page refresh = same view.
 - **Video player**: Click any video thumbnail → modal with `<video controls autoPlay>`.
 - **Cache busting**: Image URLs include `?v={timestamp}` to bust browser cache on update.
 
 ### Multi-Server Management (VastAI)
 
-- **Registry**: `.vast-registry.json` — maps server IDs to VastAI instances + influencer assignments.
+- **Registry**: `servers` table in SQLite via `DBServerRegistry` in `src/vast_agent/db_registry.py` — maps server IDs to VastAI instances + influencer assignments.
 - **Manager**: `src/vast_agent/manager.py:ServerManager` — allocation, lifecycle, auto-shutdown.
+- **Instance discovery**: On startup, `ServerManager.discover_instances()` queries the VastAI API for running instances and registers any unknown ones in the DB.
 - **Allocation logic**: own server → borrow free server → create new.
 - **Health check**: background task every `health_check_interval` seconds (default 120). Removes dead servers.
 - **IMPORTANT**: Never remove servers created < 15 minutes ago (they may be booting).
@@ -67,16 +71,14 @@ FastAPI API (port 8000)
 2. **Download** — yt-dlp downloads
 3. **Filter** — ffprobe quality analysis, top-K selection
 4. **VLM Scoring** — Gemini AI evaluates persona fit (8 criteria)
-5. **Review** — human review in web UI (approve/skip + prompt per video). Saves `review_manifest.json`.
-6. **Generation** — ComfyUI on remote GPU via VastAI. Saves `generation_manifest.json`. Auto-applies character LoRAs.
+5. **Review** — human review in web UI (approve/skip + prompt per video). Saves to `reviews` + `review_videos` tables in DB.
+6. **Generation** — ComfyUI on remote GPU via VastAI. Saves to `generation_jobs` table in DB. Auto-applies character LoRAs.
 
-### Manifests in run directory
+### Data in run directory
 
 ```
 shared/influencers/{id}/pipeline_runs/{timestamp}/
-├── run_manifest.json          # Pipeline stage results (saved incrementally)
-├── review_manifest.json       # Human review decisions
-├── generation_manifest.json   # Generation job IDs (persisted across refreshes)
+├── run_manifest.json          # Pipeline stage results (written incrementally by sync pipeline runner)
 ├── {platform}/
 │   ├── platform_manifest.json # Ingested items with metadata
 │   ├── downloads/             # Raw downloaded videos
@@ -86,6 +88,8 @@ shared/influencers/{id}/pipeline_runs/{timestamp}/
 │   ├── selected/              # VLM-approved videos
 │   └── generated/             # Generated output videos (raw/refined/upscaled/postprocessed)
 ```
+
+Review decisions and generation job tracking are stored in the SQLite DB (`reviews`, `review_videos`, `generation_jobs` tables), not as manifest files.
 
 ### Common Operations
 
@@ -112,14 +116,15 @@ PYTHONPATH=src .venv/bin/python -c "from vast_agent.vastai import VastClient; c=
 - `default_source: seed` was removed. Use `default_sources` (per-platform) in `parser.yaml`.
 - Frontend `runAll` sends generation requests sequentially but they queue on the backend via per-server locks.
 - `onnxruntime-gpu` must be installed with `--extra-index-url` for CUDA provider. Added to `wan_animate.yaml` extra_pip and reinstalled after custom nodes.
-- VastAI instance state files: `.vast-registry.json` (main), `.vast-server-{id}.json` (per-server), `.vast-instance.json` (legacy).
-- The enriched run API response includes live job status for generation jobs — but only while the backend process is running (in-memory jobs).
+- VastAI server state: `servers` table in SQLite (canonical), `.vast-server-{id}.json` (runtime cache, recreated from DB if missing). Legacy `.vast-instance.json` is cleaned up by `discover_instances()`.
+- The enriched run API response includes live job status for generation jobs. Job status persists in the DB, so it survives server restarts. Live in-memory progress overlays the DB data for running jobs.
 
 ### Docs
 
-- `docs/api.md` — all API endpoints, async job system, static file serving
+- `docs/api.md` — all API endpoints, async job system, SSE events, static file serving
+- `docs/database.md` — SQLite schema, tables, data flow, migration, operations
 - `docs/trend_parser.md` — pipeline stages, sources, filter scoring, VLM
 - `docs/pipeline.md` — ComfyUI workflow commands, configs, parameters
 - `docs/vast_agent.md` — CLI, multi-server management, auto-shutdown
 - `docs/telegram_bot.md` — conversation flow, commands
-- `docs/frontend.md` — React SPA architecture, pages, components, API integration
+- `docs/frontend.md` — React SPA architecture, pages, components, SSE integration

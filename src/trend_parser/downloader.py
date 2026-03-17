@@ -84,7 +84,13 @@ class TrendDownloadService:
         command_parts[0] = resolved_binary
 
         base_dir = Path(download_dir).expanduser().resolve() if download_dir else self.downloads_dir.resolve()
-        platform_dir = base_dir / platform
+        # When download_dir is provided by the pipeline runner, it already
+        # contains the platform path (e.g. .../instagram/downloads).
+        # Only add a platform subdirectory for the legacy shared downloads dir.
+        if download_dir:
+            platform_dir = base_dir
+        else:
+            platform_dir = base_dir / platform
         platform_dir.mkdir(parents=True, exist_ok=True)
 
         output_template = str(platform_dir / "%(extractor)s_%(id)s.%(ext)s")

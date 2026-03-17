@@ -50,7 +50,8 @@ def setup(workflow: str, skip_models: bool):
         print("\n=== Installing GPU-accelerated packages ===")
         for pkg in config.extra_pip:
             print(f"  Installing {pkg}...")
-            subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=False)
+            parts = pkg.split()
+            subprocess.run([sys.executable, "-m", "pip", "install", *parts], check=False)
 
     if not skip_models:
         print("\n=== Downloading Models ===")

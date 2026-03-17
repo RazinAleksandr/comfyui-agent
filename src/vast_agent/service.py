@@ -140,14 +140,26 @@ class VastAgentService:
             instance = client.get_instance(instance_id)
         except (VastAPIError, Exception) as exc:
             logger.warning("Could not query instance %s: %s", instance_id, exc)
-            # Instance likely destroyed — clean up stale state file
-            if "not found" in str(exc).lower():
+            err_msg = str(exc).lower()
+            # Instance confirmed gone — clean up stale state file
+            if "not found" in err_msg and "null" not in err_msg:
                 self.state_file.unlink(missing_ok=True)
+                return ServerStatus(running=False, instance_id=instance_id)
+            # API returned junk but instance may still be alive — report
+            # SSH info from state file and mark as "loading" via actual_status
+            ssh_host = state.get("ssh_host")
+            ssh_port = state.get("ssh_port")
+            ssh_ok = False
+            if ssh_host and ssh_port:
+                ssh_ok = check_ssh(ssh_host, ssh_port, ssh_key=self.config.ssh_key)
             return ServerStatus(
-                running=False,
+                running=ssh_ok,
                 instance_id=instance_id,
-                ssh_host=state.get("ssh_host"),
-                ssh_port=state.get("ssh_port"),
+                ssh_host=ssh_host,
+                ssh_port=ssh_port,
+                actual_status="loading" if not ssh_ok else "running",
+                dph_total=state.get("dph_total"),
+                ssh_reachable=ssh_ok,
             )
 
         ssh_reachable = False
@@ -378,6 +390,31 @@ class VastAgentService:
         self._log("Downloading results...")
         _report({"phase": "downloading", "stage": "downloading"})
         rsync_pull(host, port, f"{remote_output}/", str(local_output) + "/", ssh_key=key)
+
+        # Validate downloaded files: compare sizes with remote
+        try:
+            remote_sizes_raw = run_remote(
+                host, port,
+                f"find {shlex.quote(remote_output)} -type f -printf '%s %f\\n'",
+                ssh_key=key, capture=True, check=False,
+            )
+            if remote_sizes_raw:
+                for line in remote_sizes_raw.strip().splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2:
+                        remote_size, fname = int(parts[0]), parts[1]
+                        local_file = local_output / fname
+                        if local_file.exists():
+                            local_size = local_file.stat().st_size
+                            if local_size != remote_size:
+                                logger.warning(
+                                    "Download size mismatch for %s: local=%d remote=%d",
+                                    fname, local_size, remote_size,
+                                )
+                        else:
+                            logger.warning("Remote file %s not found locally after rsync", fname)
+        except Exception:
+            logger.debug("Download validation skipped", exc_info=True)
 
         # Parse JSON output, rewrite remote paths to local
         outputs: list[str] = []

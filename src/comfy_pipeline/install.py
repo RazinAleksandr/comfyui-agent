@@ -36,7 +36,9 @@ def install_comfyui(config: WorkflowConfig):
 
     for pkg in config.extra_pip:
         print(f"Installing {pkg}...")
-        _run([sys.executable, "-m", "pip", "install", pkg], check=False)
+        # Split the entry so flags like --extra-index-url are passed as separate args
+        parts = pkg.split()
+        _run([sys.executable, "-m", "pip", "install", *parts], check=False)
 
 
 def install_custom_nodes(config: WorkflowConfig):

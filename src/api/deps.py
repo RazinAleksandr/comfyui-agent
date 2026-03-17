@@ -7,12 +7,14 @@ from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
 
 from api.database import Database
+from api.db_store import DBStore
 from api.events import EventBus
 from api.job_manager import PersistentJobManager
 
 # Singleton instances — initialized once at startup via init_deps()
 _config: ParserConfig | None = None
 _store: FilesystemStore | None = None
+_db_store: DBStore | None = None
 _job_manager: PersistentJobManager | None = None
 _seed_dir: Path | None = None
 _db: Database | None = None
@@ -28,12 +30,13 @@ def init_deps(
     db: Database,
     event_bus: EventBus,
 ) -> None:
-    global _config, _store, _job_manager, _seed_dir, _db, _event_bus
+    global _config, _store, _db_store, _job_manager, _seed_dir, _db, _event_bus
     _config = config
     _store = store
     _seed_dir = seed_dir
     _db = db
     _event_bus = event_bus
+    _db_store = DBStore(db)
     _job_manager = PersistentJobManager(db=db, event_bus=event_bus)
 
 
@@ -60,6 +63,11 @@ def get_db() -> Database:
 def get_event_bus() -> EventBus:
     assert _event_bus is not None, "deps not initialized"
     return _event_bus
+
+
+def get_db_store() -> DBStore:
+    assert _db_store is not None, "deps not initialized"
+    return _db_store
 
 
 def get_seed_dir() -> Path:

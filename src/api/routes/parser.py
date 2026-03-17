@@ -113,6 +113,9 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
 
     # Write to DB atomically
     try:
+        # Ensure pipeline run exists in DB (synced from filesystem on first access)
+        await _ensure_run_in_db(run)
+
         # Upsert review record
         existing = await db.fetchone(
             "SELECT id FROM reviews WHERE run_id = ?", [run_id]
@@ -138,17 +141,6 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
             )
     except Exception:
         logger.warning("Failed to save review to DB", exc_info=True)
-
-    # Also write filesystem manifest as audit trail
-    review_path = (
-        store.influencer_pipeline_runs_dir(influencer_id) / run_id / "review_manifest.json"
-    )
-    try:
-        review_path.write_text(
-            json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
-        )
-    except Exception:
-        logger.warning("Failed to write review manifest file", exc_info=True)
 
     return manifest
 
@@ -187,6 +179,37 @@ def _now() -> str:
 
 
 # --- Run enrichment ---
+
+
+async def _ensure_run_in_db(run: dict[str, Any]) -> None:
+    """Ensure a filesystem-based pipeline run exists in the DB.
+
+    The pipeline runner writes to filesystem only (sync thread).
+    This syncs it to DB on first access so FK references work.
+    """
+    run_id = run.get("run_id", "")
+    if not run_id:
+        return
+    db = get_db()
+    existing = await db.fetchone("SELECT 1 FROM pipeline_runs WHERE run_id = ?", [run_id])
+    if existing:
+        return
+    influencer_id = run.get("influencer_id", "")
+    # Ensure influencer exists too
+    inf_exists = await db.fetchone("SELECT 1 FROM influencers WHERE influencer_id = ?", [influencer_id])
+    if not inf_exists and influencer_id:
+        await db.execute(
+            "INSERT OR IGNORE INTO influencers (influencer_id, name, created_at, updated_at) "
+            "VALUES (?, 'Influencer', ?, ?)",
+            [influencer_id, _now(), _now()],
+        )
+    await db.execute(
+        "INSERT OR IGNORE INTO pipeline_runs "
+        "(run_id, influencer_id, started_at, base_dir, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'running', ?, ?)",
+        [run_id, influencer_id, run.get("started_at", _now()),
+         run.get("base_dir", ""), _now(), _now()],
+    )
 
 
 def _fs_to_url(abs_path: str, data_dir: Path) -> str:
@@ -231,15 +254,15 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
 
 async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Enrich a pipeline run manifest with video lists and sub-report data."""
+    # Ensure this run exists in DB (pipeline runner only writes filesystem)
+    await _ensure_run_in_db(run)
+
     base_dir = run.get("base_dir", "")
     run_id = run.get("run_id", "")
 
     if base_dir:
-        # Load review from DB first, fall back to filesystem
+        # Load review from DB
         review = await _load_review_from_db(run_id)
-        if review is None:
-            review_path = Path(base_dir) / "review_manifest.json"
-            review = _load_json(str(review_path))
         if review:
             run["review"] = review
 
@@ -247,46 +270,21 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         gen_data = await _load_generation_from_db(run_id, data_dir)
         if gen_data:
             run["generation"] = gen_data
-        else:
-            # Fallback: load from filesystem manifest (for backward compat)
-            gen_path = Path(base_dir) / "generation_manifest.json"
-            gen_fs = _load_json(str(gen_path))
-            if gen_fs:
-                jm = get_job_manager()
-                for entry in gen_fs.get("jobs", []):
-                    job_info = jm.get(entry.get("job_id", ""))
-                    if job_info:
-                        entry["status"] = job_info.status
-                        entry["progress"] = job_info.progress
-                        entry["error"] = job_info.error
-                        if job_info.status == "completed" and job_info.result:
-                            result = job_info.result
-                            if isinstance(result, dict):
-                                entry["outputs"] = [
-                                    {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                                    for p in result.get("outputs", [])
-                                    if Path(p).exists()
-                                ]
-                    if not job_info and entry.get("outputs"):
-                        raw_outputs = entry["outputs"]
-                        if raw_outputs and isinstance(raw_outputs[0], str):
-                            entry["outputs"] = [
-                                {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                                for p in raw_outputs
-                                if Path(p).exists()
-                            ]
-                run["generation"] = gen_fs
 
     for plat in run.get("platforms", []):
         base_dir = run.get("base_dir", "")
         platform_name = plat.get("platform", "")
         plat_dir = Path(base_dir) / platform_name if base_dir else None
 
-        # Downloads
-        download_dir = str(plat_dir / "downloads" / platform_name) if plat_dir else None
-        # Also check downloads/ directly (some runs put files there)
-        if download_dir and not Path(download_dir).is_dir() and plat_dir:
-            download_dir = str(plat_dir / "downloads")
+        # Downloads — new runs store directly in downloads/, old runs in downloads/{platform}/
+        download_dir = str(plat_dir / "downloads") if plat_dir else None
+        if download_dir and not Path(download_dir).is_dir():
+            download_dir = None
+        # Check for old nested structure: downloads/{platform}/
+        if download_dir:
+            nested = Path(download_dir) / platform_name
+            if nested.is_dir() and any(nested.iterdir()):
+                download_dir = str(nested)
         plat["download_videos"] = _list_videos(download_dir, data_dir)
 
         # Filtered

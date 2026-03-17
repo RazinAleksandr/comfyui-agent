@@ -16,7 +16,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../components/ui/dialog";
-import { useInfluencer, usePipelineRuns, useJobPoller } from "../api/hooks";
+import { useInfluencer, usePipelineRuns, useJobSSE } from "../api/hooks";
 import { api } from "../api/client";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import type { InfluencerOut, JobInfo, Task } from "../api/types";
@@ -105,7 +105,7 @@ export default function AvatarDetailPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const { job: activeJob, isComplete: jobDone } = useJobPoller(activeJobId, 2000);
+  const { job: activeJob, isComplete: jobDone } = useJobSSE(activeJobId);
 
   // On mount, restore any active pipeline job for this influencer
   useEffect(() => {
@@ -114,7 +114,7 @@ export default function AvatarDetailPage() {
       if (jobs.length > 0) {
         setActiveJobId(jobs[0].job_id);
       }
-    }).catch(() => {});
+    }).catch((err) => console.warn("Failed to restore active pipeline job:", err));
   }, [avatarId]);
 
   // When job completes, keep live card visible briefly, then refetch and clear

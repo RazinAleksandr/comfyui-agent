@@ -155,13 +155,17 @@ async def get_allocation_info(influencer_id: str) -> dict:
 
 @router.get("/server/status")
 async def server_status(influencer_id: str | None = None) -> dict:
-    """Check GPU server status, including any running startup job."""
+    """Check GPU server status, including any running startup job.
+
+    Looks for the influencer's own server first, then any available
+    free server (discovered instances that aren't assigned yet).
+    """
     manager = get_server_manager()
 
-    # If influencer_id provided, find their server
     if influencer_id:
         info = manager.get_influencer_server_info(influencer_id)
-        server_id = info.get("server_id")
+        # Try own server, then borrowable free server
+        server_id = info.get("server_id") or info.get("borrow_server_id")
         if server_id:
             status = manager.server_status(server_id)
             # Attach startup job info
@@ -170,26 +174,34 @@ async def server_status(influencer_id: str | None = None) -> dict:
             active = next((j for j in server_jobs if j.status in ("pending", "running")), None)
             status["startup_job_id"] = active.job_id if active else None
             status["startup_job_status"] = active.status if active else None
+            # If this is a borrowable server, note it so frontend knows
+            if not info.get("server_id") and info.get("borrow_server_id"):
+                status["is_borrowable"] = True
             return status
 
-    # Fallback: legacy single-server behavior
-    svc = get_vast_service()
-    result = await asyncio.to_thread(svc.status)
-
-    jm = get_job_manager()
-    server_jobs = jm.find_jobs(type="server_up")
-    active = next((j for j in server_jobs if j.status in ("pending", "running")), None)
+    # Fallback: check any server in registry
+    all_servers = manager.list_servers()
+    if all_servers:
+        first = all_servers[0]
+        sid = first["server_id"]
+        status = manager.server_status(sid)
+        jm = get_job_manager()
+        server_jobs = jm.find_jobs(type="server_up", server_id=sid)
+        active = next((j for j in server_jobs if j.status in ("pending", "running")), None)
+        status["startup_job_id"] = active.job_id if active else None
+        status["startup_job_status"] = active.status if active else None
+        return status
 
     return {
-        "status": "running" if result.running else "offline",
-        "instance_id": result.instance_id,
-        "ssh_host": result.ssh_host,
-        "ssh_port": result.ssh_port,
-        "actual_status": result.actual_status,
-        "dph_total": result.dph_total,
-        "ssh_reachable": result.ssh_reachable,
-        "startup_job_id": active.job_id if active else None,
-        "startup_job_status": active.status if active else None,
+        "status": "offline",
+        "instance_id": None,
+        "ssh_host": None,
+        "ssh_port": None,
+        "actual_status": None,
+        "dph_total": None,
+        "ssh_reachable": False,
+        "startup_job_id": None,
+        "startup_job_status": None,
     }
 
 

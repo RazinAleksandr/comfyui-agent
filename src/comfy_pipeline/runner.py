@@ -36,6 +36,9 @@ def _get_video_duration(path: Path) -> float:
     return float(result.stdout.strip()) if result.returncode == 0 else 0.0
 
 
+_temp_files: list[Path] = []  # Track temp files for cleanup
+
+
 def _trim_video(path: Path, max_seconds: float) -> Path:
     """Trim video to max_seconds. Returns path to trimmed file."""
     import sys
@@ -54,7 +57,18 @@ def _trim_video(path: Path, max_seconds: float) -> Path:
         ],
         capture_output=True, check=True,
     )
+    _temp_files.append(trimmed)
     return trimmed
+
+
+def cleanup_temp_files() -> None:
+    """Remove temp files created by _trim_video. Call after upload is done."""
+    while _temp_files:
+        p = _temp_files.pop()
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def prepare_workflow(config: WorkflowConfig, client: ComfyUIClient) -> dict:
@@ -104,6 +118,9 @@ def run_single(
         print(f"Uploading {input_name}...", file=sys.stderr)
         uploaded_name = client.upload_file(file_path)
         injections.append((mapping.node_id, mapping.param, uploaded_name))
+
+    # Clean up any trimmed temp files now that uploads are done
+    cleanup_temp_files()
 
     workflow = inject_inputs(api_workflow, injections)
 

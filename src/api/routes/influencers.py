@@ -1,13 +1,15 @@
-"""Influencer CRUD routes — filesystem-backed."""
+"""Influencer CRUD routes — DB-backed with filesystem for files."""
 from __future__ import annotations
 
+import json
 import shutil
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.deps import get_store
+from api.deps import get_db_store, get_store
 
 router = APIRouter(prefix="/influencers", tags=["influencers"])
 
@@ -34,53 +36,77 @@ class InfluencerOut(BaseModel):
 
 @router.get("")
 async def list_influencers() -> list[InfluencerOut]:
-    store = get_store()
-    records = store.list_influencers()
-    return [_to_out(r) for r in records]
+    db_store = get_db_store()
+    records = await db_store.list_influencers()
+    if not records:
+        # Fallback to filesystem if DB empty (pre-migration)
+        fs_store = get_store()
+        fs_records = fs_store.list_influencers()
+        return [_fs_to_out(r) for r in fs_records]
+    return [_dict_to_out(r) for r in records]
 
 
 @router.get("/{influencer_id}")
 async def get_influencer(influencer_id: str) -> InfluencerOut:
-    store = get_store()
-    record = store.load_influencer(influencer_id)
+    db_store = get_db_store()
+    record = await db_store.load_influencer(influencer_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Influencer not found")
-    return _to_out(record)
+        # Fallback to filesystem
+        fs_store = get_store()
+        fs_record = fs_store.load_influencer(influencer_id)
+        if fs_record is None:
+            raise HTTPException(status_code=404, detail="Influencer not found")
+        return _fs_to_out(fs_record)
+    return _dict_to_out(record)
 
 
 @router.delete("/{influencer_id}")
 async def delete_influencer(influencer_id: str) -> dict:
     """Delete an influencer and all associated data."""
-    store = get_store()
-    record = store.load_influencer(influencer_id)
+    db_store = get_db_store()
+    record = await db_store.load_influencer(influencer_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
-    store.delete_influencer(influencer_id)
+    # Delete from DB
+    await db_store.delete_influencer(influencer_id)
+    # Also delete filesystem directory
+    fs_store = get_store()
+    fs_store.delete_influencer(influencer_id)
     return {"deleted": influencer_id}
 
 
 @router.put("/{influencer_id}")
 async def upsert_influencer(influencer_id: str, body: InfluencerUpsertRequest) -> InfluencerOut:
-    store = get_store()
-    record = store.save_influencer(influencer_id, body.model_dump(exclude_unset=True))
-    return _to_out(record)
+    db_store = get_db_store()
+    # Ensure influencer directory exists on filesystem (for reference images, pipeline runs)
+    fs_store = get_store()
+    fs_store.influencer_dir(influencer_id).mkdir(parents=True, exist_ok=True)
+    record = await db_store.save_influencer(influencer_id, body.model_dump(exclude_unset=True))
+    return _dict_to_out(record)
 
 
 @router.post("/{influencer_id}/reference-image")
 async def upload_reference_image(influencer_id: str, file: UploadFile) -> dict:
     """Upload a reference image for an influencer."""
-    store = get_store()
-    record = store.load_influencer(influencer_id)
+    db_store = get_db_store()
+    record = await db_store.load_influencer(influencer_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
 
+    fs_store = get_store()
     ext = _safe_extension(file.filename or "image.jpg")
-    dest = store.influencer_dir(influencer_id) / f"reference{ext}"
+    dest = fs_store.influencer_dir(influencer_id) / f"reference{ext}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    rel_path = str(dest.relative_to(store.data_dir))
-    store.save_influencer(influencer_id, {"reference_image_path": rel_path})
+    rel_path = str(dest.relative_to(fs_store.data_dir))
+    # Update both DB and filesystem
+    await db_store.save_influencer(influencer_id, {"reference_image_path": rel_path})
+    try:
+        fs_store.save_influencer(influencer_id, {"reference_image_path": rel_path})
+    except Exception:
+        pass
     return {"reference_image_path": rel_path}
 
 
@@ -93,10 +119,32 @@ def _safe_extension(filename: str) -> str:
     return ".jpg"
 
 
-def _to_out(record) -> InfluencerOut:
+def _dict_to_out(record: dict) -> InfluencerOut:
+    profile_image_url = None
+    if record.get("reference_image_path"):
+        updated = record.get("updated_at", "")
+        try:
+            ts = int(datetime.fromisoformat(str(updated).replace("Z", "+00:00")).timestamp()) if updated else 0
+        except (ValueError, TypeError):
+            ts = 0
+        profile_image_url = "/files/" + quote(record["reference_image_path"], safe="/") + f"?v={ts}"
+    return InfluencerOut(
+        influencer_id=record["influencer_id"],
+        name=record.get("name", "Influencer"),
+        description=record.get("description"),
+        hashtags=record.get("hashtags"),
+        video_suggestions_requirement=record.get("video_suggestions_requirement"),
+        reference_image_path=record.get("reference_image_path"),
+        profile_image_url=profile_image_url,
+        created_at=record.get("created_at"),
+        updated_at=record.get("updated_at"),
+    )
+
+
+def _fs_to_out(record) -> InfluencerOut:
+    """Convert old FsInfluencerRecord to InfluencerOut."""
     profile_image_url = None
     if record.reference_image_path:
-        # Add cache-busting param so browser reloads after image changes
         ts = int(record.updated_at.timestamp()) if record.updated_at else 0
         profile_image_url = "/files/" + quote(record.reference_image_path, safe="/") + f"?v={ts}"
     return InfluencerOut(

@@ -1,7 +1,7 @@
 gpu: RTX 5090
 min_gpu_ram: 32000 # MB
 disk_space: 100 # GB
-max_price: 0.4 # $/hr
+max_price: 0.45 # $/hr
 max_bw_price: 0.005 # $/GB download; filters out expensive bandwidth hosts
 image: vastai/comfy:v0.16.4-cuda-12.9-py312
 remote_path: /workspace/comfyui-agent
@@ -12,3 +12,4 @@ health_check_interval: 120 # seconds between background server health checks (0 
 extra_filters:
   inet_down: { "gte": 4000 } # min 500 Mbps download
   num_gpus: { "eq": 1 }
+  cuda_max_good: { "gte": 13.0 } # RTX 5090 (Blackwell) needs CUDA 13.0+

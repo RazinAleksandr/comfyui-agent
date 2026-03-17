@@ -5,7 +5,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../components/ui/dialog";
-import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobPoller } from "../api/hooks";
+import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobSSE, useConnectionStatus } from "../api/hooks";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { api } from "../api/client";
 import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo } from "../api/types";
@@ -949,7 +949,7 @@ function formatProgress(progress: Record<string, unknown> | null | undefined): s
 }
 
 function GenerationJobProgress({ jobId }: { jobId: string }) {
-  const { job } = useJobPoller(jobId);
+  const { job } = useJobSSE(jobId);
   if (!job) return null;
 
   const progress = job.progress ?? {};
@@ -1005,13 +1005,24 @@ function GenerationPanel({
 }) {
   const [serverState, setServerState] = useState<"unknown" | "checking" | "offline" | "starting" | "running">("unknown");
   const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
-  const [videoJobs, setVideoJobs] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {};
+  const [videoJobs, setVideoJobs] = useState<Record<string, string>>({});
+
+  // Sync videoJobs from existingJobs (DB) whenever they change
+  useEffect(() => {
+    const fromDb: Record<string, string> = {};
     for (const job of existingJobs ?? []) {
-      initial[job.file_name] = job.job_id;
+      fromDb[job.file_name] = job.job_id;
     }
-    return initial;
-  });
+    setVideoJobs((prev) => {
+      // Merge: keep locally-submitted job IDs (newer), add DB ones we don't have yet
+      const merged = { ...fromDb };
+      for (const [fname, jid] of Object.entries(prev)) {
+        // Local job ID takes priority (just submitted, may not be in DB yet)
+        if (jid) merged[fname] = jid;
+      }
+      return merged;
+    });
+  }, [existingJobs]);
   const [error, setError] = useState<string | null>(null);
   const [serverJobId, setServerJobId] = useState<string | null>(null);
   const [serverId, setServerId] = useState<string | null>(null);
@@ -1021,14 +1032,16 @@ function GenerationPanel({
   const [shuttingDown, setShuttingDown] = useState(false);
 
   const approvedVideos = reviewVideos.filter((v) => v.approved);
-  const { job: serverJob } = useJobPoller(serverJobId);
+  const { job: serverJob } = useJobSSE(serverJobId);
 
   // When server startup job completes, update state
   if (serverJob?.status === "completed" && serverState === "starting") {
     setServerState("running");
     setServerJobId(null);
     // Refresh allocation info
-    api.getAllocationInfo(influencerId).then(setAllocation).catch(() => {});
+    api.getAllocationInfo(influencerId).then(setAllocation).catch((err) => {
+      console.warn("Failed to refresh allocation info:", err);
+    });
   }
 
   // Auto-check server status on mount
@@ -1038,7 +1051,7 @@ function GenerationPanel({
       if (info.server_id) {
         setServerId(info.server_id);
       }
-    }).catch(() => {});
+    }).catch((err) => console.warn("Failed to get allocation info:", err));
 
     api.serverStatus(influencerId).then((s) => {
       if (s.server_id) setServerId(s.server_id);
@@ -1221,15 +1234,13 @@ function GenerationPanel({
             {approvedVideos.map((video, idx) => {
               const jobId = videoJobs[video.file_name];
               const isGenerating = generatingIdx === idx;
-              const hasJob = !!jobId;
               const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
-              const isRetried = hasJob && existingJob && jobId !== existingJob.job_id;
-              const persistedStatus = isRetried ? "running" : existingJob?.status;
-              const isDeadJob = hasJob && !persistedStatus && !isRetried;
-              const isLostJob = !isRetried && (persistedStatus === "lost" || isDeadJob);
-              const isFailedJob = !isRetried && persistedStatus === "failed";
-              const isCompletedJob = !isRetried && persistedStatus === "completed";
-              const isRunningJob = isRetried || (hasJob && (persistedStatus === "running" || persistedStatus === "pending"));
+              // Determine status: DB status is canonical, local submission is "running"
+              const jobStatus = existingJob?.status || (jobId ? "running" : undefined);
+              const isCompletedJob = jobStatus === "completed";
+              const isFailedJob = jobStatus === "failed";
+              const isLostJob = jobStatus === "lost";
+              const isRunningJob = jobStatus === "running" || jobStatus === "pending";
 
               return (
                 <div key={video.file_name} className={`flex items-center gap-3 p-3 rounded-lg border bg-white ${
@@ -1243,7 +1254,7 @@ function GenerationPanel({
                     {video.prompt && (
                       <p className="text-xs text-slate-500 truncate italic">"{video.prompt}"</p>
                     )}
-                    {isRunningJob && <GenerationJobProgress jobId={jobId} />}
+                    {isRunningJob && <GenerationJobProgress jobId={existingJob?.job_id || jobId} />}
                     {isCompletedJob && existingJob?.outputs && existingJob.outputs.length > 0 && (
                       <div className="flex gap-2 mt-2">
                         {existingJob.outputs.map((out: { url: string; name: string }, oi: number) => (

@@ -4,13 +4,13 @@ Manages GPU server lifecycle on VastAI and executes `comfy-pipeline` commands re
 
 ```
 src/vast_agent/
-  cli.py        Click CLI entry point (thin wrapper over service)
-  service.py    VastAgentService — programmatic interface used by API
-  manager.py    ServerManager — multi-server allocation and lifecycle
-  registry.py   ServerRegistry — persistent server-to-influencer mapping
-  config.py     YAML config loading
-  vastai.py     VastAI REST API wrapper
-  remote.py     SSH/rsync operations
+  cli.py           Click CLI entry point (thin wrapper over service)
+  service.py       VastAgentService — programmatic interface used by API
+  manager.py       ServerManager — multi-server allocation, lifecycle, instance discovery
+  db_registry.py   DBServerRegistry — SQLite-backed server-to-influencer mapping
+  config.py        YAML config loading
+  vastai.py        VastAI REST API wrapper
+  remote.py        SSH/rsync operations
 ```
 
 ## CLI Commands
@@ -158,30 +158,19 @@ Common GPU names: `RTX 5090`, `RTX 4090`, `RTX 3090`, `RTX A6000`, `A100 SXM4`, 
 
 ## Multi-Server Management
 
-The system supports multiple concurrent VastAI servers, each mapped to an influencer. This is managed by `ServerManager` and persisted in `.vast-registry.json`.
+The system supports multiple concurrent VastAI servers, each mapped to an influencer. This is managed by `ServerManager` and persisted in the `servers` table in SQLite (`shared/studio.db`) via `DBServerRegistry`.
 
 ### Server Registry
 
-`.vast-registry.json` replaces the old `.vast-instance.json`:
+Server entries are stored in the `servers` table with columns: `server_id` (PK), `instance_id`, `ssh_host`, `ssh_port`, `dph_total`, `influencer_id`, `workflow`, `auto_shutdown`, `created_at`, `updated_at`.
 
-```json
-{
-  "servers": {
-    "srv_32921955": {
-      "instance_id": 32921955,
-      "ssh_host": "ssh5.vast.ai",
-      "ssh_port": 11954,
-      "dph_total": 0.414,
-      "influencer_id": "emi2soul",
-      "workflow": "wan_animate",
-      "created_at": "2026-03-16T10:00:00Z",
-      "auto_shutdown": false
-    }
-  }
-}
-```
+`DBServerRegistry` provides both async and sync variants of all operations (`list_servers` / `list_servers_sync`, etc.) since `ServerManager` methods are called from both async routes and sync threads (health check, generation lock).
 
-Old `.vast-instance.json` files are auto-migrated to the registry on first startup.
+On first startup, `migrate.py` reads any existing `.vast-registry.json` and populates the `servers` table. The legacy `.vast-instance.json` files are cleaned up by `discover_instances()` if the corresponding instance is already registered in the DB.
+
+### Instance Discovery
+
+On server startup, `ServerManager.discover_instances()` queries the VastAI API for all running instances and registers any that are not already in the DB. This recovers from server restarts where DB entries may have been lost or instances were created externally. Discovered instances also get a `.vast-server-{id}.json` state file so `VastAgentService` can use them.
 
 ### Smart Allocation
 
@@ -230,9 +219,9 @@ manager.shutdown_server(server_id)
 manager.set_auto_shutdown(server_id, True)
 ```
 
-## Legacy State Tracking
+## State Files
 
-The CLI still uses per-server state files (`.vast-server-{id}.json`) for backward compatibility. These are created by `ServerManager` and managed automatically.
+Per-server state files (`.vast-server-{id}.json`) are runtime cache files used by `VastAgentService` internally for SSH connection details. They are recreated from the DB if missing. The canonical server registry is the `servers` table in SQLite.
 
 ## Internal Flow
 
@@ -254,5 +243,5 @@ vast-agent run -w wan_animate --input ...
 vast-agent down
   +-- SSH: pkill ComfyUI processes
   +-- DELETE /api/v0/instances/{id}/
-  +-- remove .vast-instance.json
+  +-- remove server from DB + .vast-server-{id}.json
 ```

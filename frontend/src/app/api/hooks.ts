@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "./client";
 import { pipelineRunToTask } from "./mappers";
 import { subscribe } from "./sse";
@@ -87,7 +87,7 @@ export function useRawPipelineRun(
   }, [influencerId, runId]);
 }
 
-// ---- Job polling hook (legacy, still works as fallback) ----
+// ---- SSE-based job hook (real-time, no polling) ----
 
 interface UseJobPollerResult {
   job: JobInfo | null;
@@ -96,65 +96,6 @@ interface UseJobPollerResult {
   error: string | null;
 }
 
-export function useJobPoller(
-  jobId: string | null,
-  intervalMs = 3000,
-): UseJobPollerResult {
-  const [job, setJob] = useState<JobInfo | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const isTerminal = job?.status === "completed" || job?.status === "failed";
-
-  useEffect(() => {
-    if (!jobId) {
-      setJob(null);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    const poll = async () => {
-      try {
-        const info = await api.getJob(jobId);
-        if (!cancelled) {
-          setJob(info);
-          setLoading(false);
-          if (info.status === "completed" || info.status === "failed") {
-            if (intervalRef.current) {
-              clearInterval(intervalRef.current);
-              intervalRef.current = null;
-            }
-          }
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
-        }
-      }
-    };
-
-    poll();
-    intervalRef.current = setInterval(poll, intervalMs);
-
-    return () => {
-      cancelled = true;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-  }, [jobId, intervalMs]);
-
-  return { job, loading, isComplete: isTerminal, error };
-}
-
-// ---- SSE-based job hook (real-time, replaces polling) ----
 
 /**
  * Subscribe to real-time updates for a specific job via SSE.

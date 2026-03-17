@@ -95,9 +95,19 @@ def create_app(
         except Exception:
             logger.warning("Job recovery on startup failed", exc_info=True)
 
-        # 4. Start VastAI server health check
+        # 4. Discover running VastAI instances (recovers from restart)
         try:
             from api.deps import get_server_manager
+            manager = get_server_manager()
+            import asyncio
+            discovered = await asyncio.to_thread(manager.discover_instances)
+            if discovered:
+                logger.info("Startup: discovered %d VastAI instances", len(discovered))
+        except Exception:
+            logger.warning("VastAI instance discovery failed", exc_info=True)
+
+        # 5. Start VastAI server health check
+        try:
             manager = get_server_manager()
             manager.start_health_check()
         except Exception:

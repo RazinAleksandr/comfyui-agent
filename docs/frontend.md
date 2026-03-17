@@ -1,16 +1,17 @@
 # Frontend
 
-React SPA for managing AI influencer content generation. Connects to the FastAPI backend via REST API.
+React SPA for managing AI influencer content generation. Connects to the FastAPI backend via REST API + SSE for real-time updates.
 
 ```
 frontend/
   src/
     app/
       api/
-        client.ts      Fetch-based API client
+        client.ts      Fetch-based API client (all REST endpoints)
         types.ts       TypeScript types (API + presentation)
-        hooks.ts       React hooks (data fetching, job polling)
+        hooks.ts       React hooks (data fetching, SSE-based job tracking)
         mappers.ts     PipelineRun → Task stage mapping
+        sse.ts         SSE connection singleton with auto-reconnect
       pages/
         HomePage.tsx           Influencer grid + create dialog
         AvatarDetailPage.tsx   Profile + pipeline stages + task list
@@ -21,7 +22,7 @@ frontend/
       data/
         mockData.ts    Development fallback data
       routes.ts        React Router config
-      App.tsx          Root component
+      App.tsx          Root component + ConnectionBanner
     styles/            Tailwind CSS + theme
   vite.config.ts       Vite config with proxy + build output
   package.json         Dependencies
@@ -82,7 +83,7 @@ frontend/
 - Per-video "Generate" buttons with real-time progress (node execution, sampling steps)
 - "Generate All" for batch generation
 - "Retry" button for failed jobs
-- Job status persisted in `generation_manifest.json` — survives page refresh
+- Job status persisted in SQLite DB (`generation_jobs` table) — survives page refresh and server restart
 
 ## API Integration
 
@@ -101,20 +102,42 @@ Fetch-based client with methods for all endpoints:
 api.listInfluencers()
 api.getInfluencer(id)
 api.upsertInfluencer(id, body)
+api.deleteInfluencer(id)
 api.uploadReferenceImage(id, file)
+api.getParserDefaults()
 api.startPipeline(body)
 api.listRuns(influencerId)
 api.getRun(influencerId, runId)
 api.submitReview(influencerId, runId, videos)
 api.getJob(jobId)
+api.listJobs(limit?)
 api.activeJobs(type?, influencerId?)
 api.serverStatus(influencerId?)
 api.serverUp(workflow, influencerId?)
+api.serverDown()
 api.shutdownServer(serverId)
 api.setAutoShutdown(serverId, enabled)
 api.getAllocationInfo(influencerId)
 api.startGeneration(body)
 api.listServers()
+api.getGenerationJobs(runId)
+```
+
+### SSE Client (`api/sse.ts`)
+
+Singleton EventSource connection to `/api/v1/events/stream` with:
+- Auto-reconnect with exponential backoff (1s to 30s)
+- Typed event subscriptions: `job_progress`, `job_state`, `server_change`
+- Connection lifecycle events: `__open__`, `__error__`
+- Auto-disconnect when no listeners remain
+
+```typescript
+import { subscribe } from "./sse";
+
+const unsub = subscribe("job_progress", (data) => {
+  // Handle real-time progress update
+});
+// Call unsub() to unsubscribe
 ```
 
 ### Data Mapper (`api/mappers.ts`)
@@ -131,7 +154,8 @@ Converts backend `PipelineRun` manifests (enriched with video lists, reports, re
 - `usePipelineRuns(influencerId)` — fetches + maps to Task[]
 - `usePipelineRun(influencerId, runId)` — single run + mapping
 - `useRawPipelineRun(influencerId, runId)` — raw PipelineRun for review/generation data
-- `useJobPoller(jobId, intervalMs)` — polls job until terminal state
+- `useJobSSE(jobId)` — SSE-based real-time job tracking (initial REST fetch + live progress/state via SSE, no polling)
+- `useConnectionStatus()` — returns whether the SSE connection to the backend is alive (powers the `ConnectionBanner` in `App.tsx`)
 
 ## Build
 

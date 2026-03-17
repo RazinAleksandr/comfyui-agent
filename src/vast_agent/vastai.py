@@ -157,14 +157,18 @@ class VastClient:
 
         # API may return {"instances": {...}} or the instance directly
         info = data.get("instances", data)
+        if info is None:
+            raise VastAPIError(f"Instance {instance_id} not found (null in response)")
         if isinstance(info, list):
             # Search through list for our instance
             for inst in info:
-                if inst.get("id") == instance_id:
+                if isinstance(inst, dict) and inst.get("id") == instance_id:
                     info = inst
                     break
             else:
                 raise VastAPIError(f"Instance {instance_id} not found in response")
+        if not isinstance(info, dict):
+            raise VastAPIError(f"Instance {instance_id}: unexpected response type {type(info)}")
 
         return Instance(
             instance_id=instance_id,

@@ -5,17 +5,22 @@ FastAPI application exposing all business logic as a REST API. The Telegram bot 
 ```
 src/api/
   app.py              FastAPI factory, CORS, router registration, CLI entry
-  deps.py             Singleton dependency injection (config, store, job manager)
-  jobs.py             JobManager — in-memory async job tracking
-  server.py           Click CLI entry for comfy-api (unused, argparse in app.py)
+  deps.py             Singleton dependency injection (config, store, DB, job manager, event bus)
+  database.py         Async SQLite wrapper with WAL mode and convenience helpers
+  db_store.py         DB-backed store for influencers and pipeline data
+  events.py           EventBus pub/sub and SSE stream generator
+  job_manager.py      PersistentJobManager — SQLite-backed async job tracking
+  migrate.py          One-time filesystem JSON → SQLite migration
+  schema.sql          SQLite schema (applied on startup)
   main.py             Uvicorn app entrypoint for programmatic use
 
   routes/
-    health.py          GET /health
+    health.py          GET /health (includes DB info)
     parser.py          /api/v1/parser/* — trend parsing pipeline
-    influencers.py     /api/v1/influencers/* — influencer CRUD
-    generation.py      /api/v1/generation/* — GPU server + workflow execution
-    jobs.py            /api/v1/jobs/* — job status polling
+    influencers.py     /api/v1/influencers/* — influencer CRUD (DB-backed)
+    generation.py      /api/v1/generation/* — GPU server + workflow execution + generation jobs query
+    jobs.py            /api/v1/jobs/* — job status
+    events.py          /api/v1/events/stream — SSE real-time updates
 ```
 
 ## Starting the server
@@ -30,13 +35,14 @@ comfy-api --port 8000 --reload    # auto-reload for development
 ### Health
 
 ```
-GET /health → {"status": "ok"}
+GET /health → {"status": "ok", "db": {"path": "...", "size_bytes": ..., "size_mb": ...}}
 ```
 
 ### Parser (`/api/v1/parser`)
 
 | Method | Path | Async | Description |
 |--------|------|-------|-------------|
+| `GET` | `/defaults` | sync | Return default parser settings (default_sources) |
 | `POST` | `/run` | job | Ingest trending videos from configured source |
 | `POST` | `/pipeline` | job | Full pipeline: ingest → download → filter → VLM |
 | `POST` | `/signals` | sync | Lightweight signal extraction (no download) |
@@ -70,7 +76,7 @@ GET /health → {"status": "ok"}
 }
 ```
 
-Saves `review_manifest.json` in the run directory. The enriched run response includes this as `run.review`.
+Saves to the `reviews` and `review_videos` tables in the SQLite database. The enriched run response includes this as `run.review`.
 
 ### Influencers (`/api/v1/influencers`)
 
@@ -79,6 +85,7 @@ Saves `review_manifest.json` in the run directory. The enriched run response inc
 | `GET` | `/` | List all influencers |
 | `GET` | `/{influencer_id}` | Get influencer profile |
 | `PUT` | `/{influencer_id}` | Create or update influencer |
+| `DELETE` | `/{influencer_id}` | Delete influencer and all associated data |
 | `POST` | `/{influencer_id}/reference-image` | Upload reference image (multipart) |
 
 `PUT` request:
@@ -104,6 +111,7 @@ Saves `review_manifest.json` in the run directory. The enriched run response inc
 | `POST` | `/server/{server_id}/down` | sync | Destroy a specific GPU server |
 | `POST` | `/server/{server_id}/auto-shutdown` | sync | Toggle auto-shutdown for a server |
 | `POST` | `/run` | job | Run video generation on GPU (auto-allocates server) |
+| `GET` | `/jobs?run_id=...` | sync | List generation jobs for a specific pipeline run |
 
 `POST /server/up` request:
 
@@ -145,7 +153,7 @@ Saves `review_manifest.json` in the run directory. The enriched run response inc
 
 When auto-shutdown is enabled, the server is destroyed after all generation jobs complete.
 
-Generation output is automatically postprocessed (grain, sharpness, brightness, vignette) and the postprocessed file is included in the result. Generation jobs persist to `generation_manifest.json` in the run directory, surviving page refreshes.
+Generation output is automatically postprocessed (grain, sharpness, brightness, vignette) and the postprocessed file is included in the result. Generation jobs persist to the `generation_jobs` table in SQLite, surviving page refreshes and server restarts.
 
 ### Jobs (`/api/v1/jobs`)
 
@@ -154,6 +162,19 @@ Generation output is automatically postprocessed (grain, sharpness, brightness, 
 | `GET` | `/active?type=...&influencer_id=...` | Find active (pending/running) jobs by tag filters |
 | `GET` | `/{job_id}` | Get job status, result, or error |
 | `GET` | `/?limit=50` | List recent jobs (newest first) |
+
+### Events (`/api/v1/events`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/stream` | SSE endpoint — streams job progress, state changes, server events in real-time |
+
+The SSE stream sends typed events:
+- `job_progress` — real-time progress updates for a job (node execution, sampling steps)
+- `job_state` — status transitions (pending -> running -> completed/failed)
+- `server_change` — server allocation / shutdown events
+
+Heartbeats are sent every 15 seconds to keep the connection alive.
 
 Job response:
 
@@ -178,15 +199,15 @@ Job types: `parse`, `pipeline`, `server_up`, `generation`.
 
 ## Async Job System
 
-Long-running operations (parsing ~2-10 min, generation ~3-15 min, server startup ~5-10 min) are tracked by the in-memory `JobManager`:
+Long-running operations (parsing ~2-10 min, generation ~3-15 min, server startup ~5-10 min) are tracked by `PersistentJobManager` (SQLite-backed):
 
 1. API endpoint calls `job_manager.submit_tagged(async_fn, tags, *args)` → returns `job_id`
 2. Response is `{"job_id": "..."}` (immediate, non-blocking)
-3. Client polls `GET /api/v1/jobs/{job_id}` until status is `completed` or `failed`
-4. Result or error is available in the job response
-5. Generation jobs also report real-time `progress` (current node, sampling step)
+3. Frontend connects to SSE at `GET /api/v1/events/stream` and receives real-time `job_state` and `job_progress` events
+4. Result or error is available in the job response via `GET /api/v1/jobs/{job_id}`
+5. Generation jobs also report real-time `progress` (current node, sampling step) via SSE
 
-Jobs are stored in memory — they don't survive server restarts. Generation job IDs are also persisted in `generation_manifest.json` per pipeline run, so the frontend can restore tracking after page refresh.
+Jobs are persisted in the `jobs` table in SQLite — they survive server restarts. Orphaned jobs (left in pending/running state from a previous run) are marked as failed on startup. Progress updates are buffered in memory and flushed to DB once per second. Generation jobs are additionally tracked in the `generation_jobs` table, linked to pipeline runs.
 
 ## Dependencies
 
@@ -195,10 +216,13 @@ The API uses singleton dependency injection via `deps.py`:
 | Dependency | Type | Purpose |
 |-----------|------|---------|
 | `config` | `ParserConfig` | Loaded from `configs/parser.yaml` at startup |
-| `store` | `FilesystemStore` | CRUD for influencers, pipeline runs in `shared/` |
-| `job_manager` | `JobManager` | Async job tracking |
+| `store` | `FilesystemStore` | File operations (video files, directories, pipeline run manifests) in `shared/` |
+| `db` | `Database` | Async SQLite wrapper (`shared/studio.db`) |
+| `db_store` | `DBStore` | DB-backed CRUD for influencers, reviews, pipeline runs |
+| `event_bus` | `EventBus` | In-process pub/sub for SSE real-time updates |
+| `job_manager` | `PersistentJobManager` | SQLite-backed async job tracking with SSE publishing |
 | `seed_dir` | `Path` | Location of seed JSON files |
-| `server_manager` | `ServerManager` | Multi-server GPU orchestration (lazy-loaded) |
+| `server_manager` | `ServerManager` | Multi-server GPU orchestration (lazy-loaded, uses `DBServerRegistry`) |
 
 ## Static File Serving
 
