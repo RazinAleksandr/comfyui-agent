@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import uvicorn
@@ -11,10 +12,14 @@ from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 from starlette.types import Receive, Scope, Send
 
+from api.database import Database
 from api.deps import init_deps
-from api.routes import generation, health, influencers, jobs, parser
+from api.events import EventBus
+from api.routes import events, generation, health, influencers, jobs, parser
 from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
+
+logger = logging.getLogger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -58,19 +63,56 @@ def create_app(
         seed_dir = config.resolve_seed_dir(project_root / "shared" / "seeds")
 
     store = FilesystemStore(data_dir=data_dir)
-    init_deps(config=config, store=store, seed_dir=seed_dir)
 
-    app = FastAPI(title="AI Influencer Studio", version="0.1.0")
+    # Initialize database
+    db_path = data_dir / "studio.db"
+    db = Database(db_path)
+    event_bus = EventBus()
+
+    init_deps(config=config, store=store, seed_dir=seed_dir, db=db, event_bus=event_bus)
+
+    app = FastAPI(title="AI Influencer Studio", version="0.2.0")
 
     @app.on_event("startup")
-    async def _start_health_check() -> None:
-        """Start the background VastAI server health-check on app startup."""
+    async def _startup() -> None:
+        """Initialize database, run migration, recover orphaned jobs, start health check."""
+        # 1. Connect DB and apply schema
+        await db.connect()
+        await db.apply_schema()
+
+        # 2. Run filesystem migration if DB is empty
+        try:
+            from api.migrate import migrate_filesystem_to_db
+            await migrate_filesystem_to_db(db, data_dir, project_root)
+        except Exception:
+            logger.warning("Filesystem migration failed", exc_info=True)
+
+        # 3. Recover orphaned jobs from previous run
+        try:
+            from api.deps import get_job_manager
+            jm = get_job_manager()
+            await jm.startup()
+        except Exception:
+            logger.warning("Job recovery on startup failed", exc_info=True)
+
+        # 4. Start VastAI server health check
         try:
             from api.deps import get_server_manager
             manager = get_server_manager()
             manager.start_health_check()
         except Exception:
-            pass  # non-critical — health check is optional
+            pass  # non-critical
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        """Clean shutdown: flush progress, close DB."""
+        try:
+            from api.deps import get_job_manager
+            jm = get_job_manager()
+            await jm.shutdown()
+        except Exception:
+            pass
+        await db.close()
 
     app.add_middleware(
         CORSMiddleware,
@@ -87,6 +129,7 @@ def create_app(
     app.include_router(influencers.router, prefix=API_PREFIX)
     app.include_router(generation.router, prefix=API_PREFIX)
     app.include_router(jobs.router, prefix=API_PREFIX)
+    app.include_router(events.router, prefix=API_PREFIX)
 
     # Serve files from shared/ directory (images, videos, pipeline outputs)
     data_dir.mkdir(parents=True, exist_ok=True)

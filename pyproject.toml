@@ -24,6 +24,7 @@ vps = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.20",
     "python-dateutil>=2.8",
+    "aiosqlite>=0.20",
     "instaloader>=4.10",
     "TikTokApi>=6.0",
     "playwright",

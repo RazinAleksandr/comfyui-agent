@@ -58,3 +58,19 @@
 - `comfy_pipeline/cli.py` `run --json-output` prints JSON to stdout, all progress to stderr
   - JSON is captured by `run_remote_stream` → vast-agent stdout → bot's stdout_lines → parsed in `_run_generation`
 - All three modules have correct `__init__.py` and `__main__.py` following the reference pattern
+- `src/api/jobs.py` (old in-memory JobManager) still exists but is orphaned — nothing imports it
+- `src/api/job_manager.py` is the new persistent implementation; `src/api/deps.py` wires it up
+
+## SQLite / aiosqlite Patterns (verified 2026-03-17)
+- `aiosqlite.connect()` uses Python's default `isolation_level=''` (implicit transaction management by Python)
+- With `isolation_level=''`, Python auto-BEGINs a DEFERRED transaction before the first DML in a sequence
+- Manually calling `BEGIN IMMEDIATE` after pending implicit DML raises "cannot start a transaction within a transaction"
+- `database.py transaction()` issues `BEGIN IMMEDIATE` — will crash if any `execute()` DML was called first on the same connection without an intervening commit
+- `generation_jobs.job_id REFERENCES jobs(job_id)` has NO `ON DELETE CASCADE` — deleting from `jobs` with `PRAGMA foreign_keys = ON` will fail if any generation_jobs row references the deleted job
+- Sync wrapper methods in `db_registry.py` and `job_manager.py` each create+close their own `sqlite3` connection — no `check_same_thread` issue
+
+## SSE / EventBus Patterns (verified 2026-03-17)
+- `EventBus.publish(topic, event_type, data)` — topics used: "jobs" (by job_manager); "servers" topic is subscribed but never published to
+- Frontend `sse.ts` listens for event types: `job_progress`, `job_state`, `server_change`
+- `server_change` event is never published anywhere in the backend — server update notifications are dead code
+- `sse_stream_generator` `heartbeat_interval` parameter is effectively ignored: `min(heartbeat_interval, 1.0)` always sleeps 1s and sends a heartbeat every loop iteration when idle

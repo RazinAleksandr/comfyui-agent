@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from vast_agent.config import VastConfig
-from vast_agent.registry import ServerEntry, ServerRegistry
+from vast_agent.db_registry import DBServerRegistry, ServerEntry
 from vast_agent.service import VastAgentService
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class ServerManager:
 
     def __init__(
         self,
-        registry: ServerRegistry,
+        registry: DBServerRegistry,
         config: VastConfig,
         project_root: Path,
         job_checker: Callable[[str], int] | None = None,
@@ -34,7 +34,7 @@ class ServerManager:
         """Initialize the server manager.
 
         Args:
-            registry: Server registry for persistence.
+            registry: DB-backed server registry for persistence.
             config: VastAI configuration.
             project_root: Root directory of the project.
             job_checker: Callable that takes a server_id and returns the
@@ -73,7 +73,7 @@ class ServerManager:
         else:
             state_file = self._project_root / f".vast-server-{server_id}.json"
             # Seed state file from registry if it has instance data
-            entry = self._registry.get_server(server_id)
+            entry = self._registry.get_server_sync(server_id)
             if entry and entry.instance_id and not state_file.exists():
                 import json
                 state = {
@@ -98,13 +98,9 @@ class ServerManager:
     # ------------------------------------------------------------------
 
     def _safe_remove_server(self, server_id: str) -> None:
-        """Remove a server from registry and clean up state file.
-
-        Handles the case where another thread already removed the server
-        between listing and removal (race condition).
-        """
+        """Remove a server from registry and clean up state file."""
         try:
-            self._registry.remove_server(server_id)
+            self._registry.remove_server_sync(server_id)
         except Exception as exc:
             logger.debug("Server %s already removed from registry: %s", server_id, exc)
         self._services.pop(server_id, None)
@@ -116,15 +112,9 @@ class ServerManager:
 
         Removes servers whose VastAI instances no longer exist.
         Returns list of removed server IDs.
-
-        Uses a snapshot of the server list. Individual removals are
-        guarded against concurrent modifications by the registry lock
-        and by catching KeyError if another thread already removed
-        the entry.
         """
         removed = []
-        # Take a snapshot — the registry may be modified concurrently.
-        servers = self._registry.list_servers()
+        servers = self._registry.list_servers_sync()
         for sid, entry in list(servers.items()):
             # Never remove servers created within the last 15 minutes — they may be booting
             if entry.created_at:
@@ -144,16 +134,15 @@ class ServerManager:
                 continue
 
             # Check if the instance is actually alive
-            # Skip servers that have active startup jobs (still booting)
             has_active_job = False
             if self._job_checker:
                 has_active_job = self._job_checker(sid) > 0
             if not has_active_job:
-                # Also check the in-memory job tags for server_up jobs
+                # Also check for server_up jobs for THIS specific server
                 try:
                     from api.deps import get_job_manager
                     jm = get_job_manager()
-                    server_up_jobs = jm.find_jobs(type="server_up")
+                    server_up_jobs = jm.find_jobs(type="server_up", server_id=sid)
                     has_active_job = any(j.status in ("pending", "running") for j in server_up_jobs)
                 except Exception:
                     pass
@@ -161,10 +150,6 @@ class ServerManager:
             svc = self.get_or_create_service(sid)
             try:
                 status = svc.status()
-                # Don't remove if:
-                # - instance is running (SSH reachable)
-                # - instance has an actual_status (exists on VastAI, might be booting)
-                # - there's an active startup job
                 if not status.running and not status.actual_status and not has_active_job:
                     logger.info(
                         "Server %s (instance %s) is gone, removing from registry",
@@ -200,7 +185,7 @@ class ServerManager:
         """Return server IDs that have active generation jobs."""
         if self._job_checker is None:
             return set()
-        servers = self._registry.list_servers()
+        servers = self._registry.list_servers_sync()
         busy = set()
         for sid in servers:
             if self._job_checker(sid) > 0:
@@ -219,7 +204,7 @@ class ServerManager:
         Returns (server_id, service).
         """
         # 1. Check influencer's own server
-        own = self._registry.find_by_influencer(influencer_id)
+        own = self._registry.find_by_influencer_sync(influencer_id)
         if own is not None:
             sid, entry = own
             svc = self.get_or_create_service(sid)
@@ -227,14 +212,14 @@ class ServerManager:
 
         # 2. Check for a free server to borrow
         busy_ids = self._get_busy_server_ids()
-        free = self._registry.find_free_server(
+        free = self._registry.find_free_server_sync(
             exclude_influencer_id=influencer_id,
             busy_server_ids=busy_ids,
         )
         if free is not None:
             sid, entry = free
             # Re-assign to this influencer
-            self._registry.update_entry(sid, influencer_id=influencer_id)
+            self._registry.update_entry_sync(sid, influencer_id=influencer_id)
             svc = self.get_or_create_service(sid)
             return sid, svc
 
@@ -245,7 +230,7 @@ class ServerManager:
             workflow=workflow,
             created_at=datetime.now(UTC).isoformat(),
         )
-        self._registry.add_server(sid, entry)
+        self._registry.add_server_sync(sid, entry)
         svc = self.get_or_create_service(sid)
         return sid, svc
 
@@ -256,7 +241,7 @@ class ServerManager:
     def list_servers(self) -> list[dict]:
         """List all servers with status info."""
         result = []
-        servers = self._registry.list_servers()
+        servers = self._registry.list_servers_sync()
         for sid, entry in servers.items():
             active_jobs = 0
             if self._job_checker:
@@ -284,7 +269,7 @@ class ServerManager:
         except Exception as exc:
             logger.warning("Error during shutdown of %s: %s", server_id, exc)
 
-        self._registry.remove_server(server_id)
+        self._registry.remove_server_sync(server_id)
         self._services.pop(server_id, None)
 
         # Clean up state file
@@ -293,7 +278,7 @@ class ServerManager:
 
     def set_auto_shutdown(self, server_id: str, enabled: bool) -> None:
         """Toggle auto-shutdown flag."""
-        self._registry.update_entry(server_id, auto_shutdown=enabled)
+        self._registry.update_entry_sync(server_id, auto_shutdown=enabled)
 
     def on_generation_complete(self, server_id: str) -> None:
         """Called after generation finishes.
@@ -302,7 +287,7 @@ class ServerManager:
         Note: called from within the finishing job, so that job still shows
         as "running" in the JobManager. We subtract 1 to account for it.
         """
-        entry = self._registry.get_server(server_id)
+        entry = self._registry.get_server_sync(server_id)
         if entry is None:
             return
 
@@ -323,7 +308,7 @@ class ServerManager:
 
     def server_status(self, server_id: str) -> dict:
         """Get status of a specific server."""
-        entry = self._registry.get_server(server_id)
+        entry = self._registry.get_server_sync(server_id)
         if entry is None:
             return {"server_id": server_id, "status": "not_found"}
 
@@ -372,7 +357,7 @@ class ServerManager:
 
     def get_influencer_server_info(self, influencer_id: str) -> dict:
         """Get server allocation info for an influencer."""
-        own = self._registry.find_by_influencer(influencer_id)
+        own = self._registry.find_by_influencer_sync(influencer_id)
         has_own = own is not None
 
         server_id = own[0] if own else None
@@ -385,7 +370,7 @@ class ServerManager:
 
         # Check if can borrow
         busy_ids = self._get_busy_server_ids()
-        free = self._registry.find_free_server(
+        free = self._registry.find_free_server_sync(
             exclude_influencer_id=influencer_id,
             busy_server_ids=busy_ids,
         )
@@ -410,7 +395,7 @@ class ServerManager:
             return
 
         if st.instance_id:
-            self._registry.update_entry(
+            self._registry.update_entry_sync(
                 server_id,
                 instance_id=st.instance_id,
                 ssh_host=st.ssh_host,
@@ -423,11 +408,7 @@ class ServerManager:
     # ------------------------------------------------------------------
 
     def start_health_check(self) -> None:
-        """Start the background health-check loop as an asyncio task.
-
-        Interval is configured via ``VastConfig.health_check_interval`` (seconds).
-        Set to 0 to disable.
-        """
+        """Start the background health-check loop as an asyncio task."""
         interval = self._config.health_check_interval
         if interval <= 0:
             logger.info("Server health check disabled (interval=0)")

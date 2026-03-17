@@ -6,13 +6,17 @@ from pathlib import Path
 from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
 
-from api.jobs import JobManager
+from api.database import Database
+from api.events import EventBus
+from api.job_manager import PersistentJobManager
 
 # Singleton instances — initialized once at startup via init_deps()
 _config: ParserConfig | None = None
 _store: FilesystemStore | None = None
-_job_manager: JobManager | None = None
+_job_manager: PersistentJobManager | None = None
 _seed_dir: Path | None = None
+_db: Database | None = None
+_event_bus: EventBus | None = None
 _vast_service = None  # VastAgentService (lazy, avoids import on GPU-less envs)
 _server_manager = None  # ServerManager (lazy)
 
@@ -21,12 +25,16 @@ def init_deps(
     config: ParserConfig,
     store: FilesystemStore,
     seed_dir: Path,
+    db: Database,
+    event_bus: EventBus,
 ) -> None:
-    global _config, _store, _job_manager, _seed_dir
+    global _config, _store, _job_manager, _seed_dir, _db, _event_bus
     _config = config
     _store = store
     _seed_dir = seed_dir
-    _job_manager = JobManager()
+    _db = db
+    _event_bus = event_bus
+    _job_manager = PersistentJobManager(db=db, event_bus=event_bus)
 
 
 def get_config() -> ParserConfig:
@@ -39,9 +47,19 @@ def get_store() -> FilesystemStore:
     return _store
 
 
-def get_job_manager() -> JobManager:
+def get_job_manager() -> PersistentJobManager:
     assert _job_manager is not None, "deps not initialized"
     return _job_manager
+
+
+def get_db() -> Database:
+    assert _db is not None, "deps not initialized"
+    return _db
+
+
+def get_event_bus() -> EventBus:
+    assert _event_bus is not None, "deps not initialized"
+    return _event_bus
 
 
 def get_seed_dir() -> Path:
@@ -82,12 +100,13 @@ def get_server_manager():
     if _server_manager is None:
         from vast_agent.config import VastConfig
         from vast_agent.manager import ServerManager
-        from vast_agent.registry import ServerRegistry
+        from vast_agent.db_registry import DBServerRegistry
 
         project_root = Path(__file__).resolve().parents[2]
         config_path = project_root / "configs" / "vast.yaml"
         config = VastConfig.from_yaml(config_path) if config_path.exists() else VastConfig()
-        registry = ServerRegistry(project_root / ".vast-registry.json")
+        db = get_db()
+        registry = DBServerRegistry(db)
         _server_manager = ServerManager(
             registry=registry,
             config=config,

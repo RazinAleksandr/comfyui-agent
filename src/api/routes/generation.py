@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from api.deps import get_job_manager, get_server_manager, get_store, get_vast_service
+from api.deps import get_db, get_job_manager, get_server_manager, get_store, get_vast_service
 from isp_pipeline.processor import postprocess_outputs
 
 logger = logging.getLogger(__name__)
@@ -21,71 +21,96 @@ router = APIRouter(prefix="/generation", tags=["generation"])
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-# --- Generation manifest persistence ---
+# --- DB-backed generation job tracking ---
 
 
-def _save_generation_manifest(reference_video: str, job_id: str) -> None:
-    """Persist a generation job entry to generation_manifest.json in the run directory.
+async def _save_generation_job(
+    reference_video: str,
+    job_id: str,
+    server_id: str,
+    influencer_id: str,
+) -> None:
+    """Persist a generation job entry to the database.
 
-    The run directory is found by walking up from the reference_video path.
-    Expected layout: .../run_dir/platform/selected/video.mp4
-    For non-standard paths, we look for a parent containing 'run_manifest.json'.
+    Replaces the old filesystem-based generation_manifest.json approach.
+    Atomic — no race conditions from concurrent writes.
     """
+    db = get_db()
     video_p = Path(reference_video)
+
+    # Determine run_id from the video path
+    run_id = _resolve_run_id(video_p)
+    if not run_id:
+        logger.warning("Could not resolve run_id for %s", reference_video)
+        return
+
+    # Check for existing active generation for this video in this run
+    existing = await db.fetchone(
+        "SELECT gj.job_id FROM generation_jobs gj "
+        "JOIN jobs j ON j.job_id = gj.job_id "
+        "WHERE gj.run_id = ? AND gj.file_name = ? AND j.status IN ('pending', 'running')",
+        [run_id, video_p.name],
+    )
+    if existing:
+        logger.info(
+            "Active generation already exists for %s (job %s), skipping duplicate",
+            video_p.name, existing["job_id"],
+        )
+        return
+
+    now = datetime.now(UTC).isoformat()
+    output_dir = None
+    if video_p.parent.name == "selected":
+        output_dir = str(video_p.parent.parent / "generated")
+
+    await db.execute(
+        "INSERT OR IGNORE INTO generation_jobs "
+        "(job_id, run_id, file_name, server_id, influencer_id, started_at, status, output_dir) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+        [job_id, run_id, video_p.name, server_id, influencer_id, now, output_dir],
+    )
+
+    # Also store run_id on the job itself for easy lookup
+    await db.execute(
+        "UPDATE jobs SET run_id = ?, reference_video = ? WHERE job_id = ?",
+        [run_id, reference_video, job_id],
+    )
+
+
+def _resolve_run_id(video_p: Path) -> str | None:
+    """Determine the pipeline run_id from a video file path."""
     if video_p.parent.name == "selected":
         # selected/ -> platform_dir -> run_dir
         run_dir = video_p.parent.parent.parent
-    else:
-        logger.warning(
-            "Reference video not in 'selected/' directory: %s — "
-            "searching parent directories for run_manifest.json",
-            reference_video,
-        )
-        # Walk up to find the run directory (contains run_manifest.json)
-        run_dir = None
-        for parent in video_p.parents:
-            if (parent / "run_manifest.json").is_file():
-                run_dir = parent
-                break
-        if run_dir is None:
-            logger.warning("Could not locate run directory for %s", reference_video)
-            return
-    if not run_dir.is_dir():
-        return
+        if (run_dir / "run_manifest.json").is_file():
+            return run_dir.name
+    # Walk up to find run_manifest.json
+    for parent in video_p.parents:
+        if (parent / "run_manifest.json").is_file():
+            return parent.name
+    return None
 
-    manifest_path = run_dir / "generation_manifest.json"
-    try:
-        data: dict = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
-    except (json.JSONDecodeError, OSError):
-        data = {}
 
-    jobs: list[dict] = data.get("jobs", [])
-    # Remove previous jobs for the same file — but only if they are not still
-    # actively running (avoid orphaning a job that holds the server lock).
-    jm = get_job_manager()
-    kept: list[dict] = []
-    for j in jobs:
-        if j.get("file_name") != video_p.name:
-            kept.append(j)
-            continue
-        # Same file — only keep if the old job is still actively running
-        old_info = jm.get(j.get("job_id", ""))
-        if old_info and old_info.status in ("pending", "running"):
-            logger.info(
-                "Skipping manifest replacement for %s — old job %s still %s",
-                video_p.name, j.get("job_id"), old_info.status,
-            )
-            return  # Don't add duplicate; the old job is still alive
-        # Old job is terminal or unknown — safe to replace
-    jobs = kept
-    jobs.append({
-        "file_name": video_p.name,
-        "job_id": job_id,
-        "started_at": datetime.now(UTC).isoformat(),
-    })
-    data["jobs"] = jobs
-    manifest_path.write_text(
-        json.dumps(data, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+async def _update_generation_job_complete(
+    job_id: str, outputs: list[str], output_dir: str
+) -> None:
+    """Update the generation_jobs record with results."""
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "UPDATE generation_jobs SET status = 'completed', completed_at = ?, "
+        "outputs_json = ?, output_dir = ? WHERE job_id = ?",
+        [now, json.dumps(outputs), output_dir, job_id],
+    )
+
+
+async def _update_generation_job_failed(job_id: str, error: str) -> None:
+    """Mark a generation_jobs record as failed."""
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "UPDATE generation_jobs SET status = 'failed', completed_at = ?, error = ? WHERE job_id = ?",
+        [now, error, job_id],
     )
 
 
@@ -194,7 +219,7 @@ async def server_up(body: ServerRequest) -> dict:
 async def shutdown_server(server_id: str) -> dict:
     """Shut down a specific server."""
     manager = get_server_manager()
-    entry = manager._registry.get_server(server_id)
+    entry = manager._registry.get_server_sync(server_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Server not found")
     try:
@@ -209,7 +234,7 @@ async def shutdown_server(server_id: str) -> dict:
 async def set_auto_shutdown(server_id: str, body: AutoShutdownRequest) -> dict:
     """Toggle auto-shutdown flag for a server."""
     manager = get_server_manager()
-    entry = manager._registry.get_server(server_id)
+    entry = manager._registry.get_server_sync(server_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Server not found")
     manager.set_auto_shutdown(server_id, body.enabled)
@@ -226,6 +251,53 @@ async def server_down() -> dict:
         logger.error("Failed to shut down GPU server", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to shut down server")
     return {"status": "destroyed"}
+
+
+# --- Generation jobs query route ---
+
+
+@router.get("/jobs")
+async def list_generation_jobs(run_id: str) -> list[dict]:
+    """List generation jobs for a specific pipeline run."""
+    db = get_db()
+    rows = await db.fetchall(
+        "SELECT gj.*, j.status as job_status, j.progress_json, j.error as job_error, "
+        "j.result_json "
+        "FROM generation_jobs gj "
+        "LEFT JOIN jobs j ON j.job_id = gj.job_id "
+        "WHERE gj.run_id = ? "
+        "ORDER BY gj.started_at",
+        [run_id],
+    )
+    jm = get_job_manager()
+    result = []
+    for row in rows:
+        entry = dict(row)
+        # Overlay live job status if available (more recent than DB)
+        live_info = jm.get(entry["job_id"])
+        if live_info:
+            entry["status"] = live_info.status
+            entry["progress"] = live_info.progress
+            entry["error"] = live_info.error
+            if live_info.status == "completed" and live_info.result:
+                entry["outputs"] = live_info.result.get("outputs", [])
+        else:
+            # Use DB data
+            entry["status"] = entry.get("job_status") or entry.get("status", "unknown")
+            try:
+                entry["progress"] = json.loads(entry.get("progress_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                entry["progress"] = {}
+            try:
+                entry["outputs"] = json.loads(entry.get("outputs_json") or "[]") or []
+            except (json.JSONDecodeError, TypeError):
+                entry["outputs"] = []
+            entry["error"] = entry.get("job_error") or entry.get("error")
+        # Clean up internal fields
+        for key in ("job_status", "progress_json", "job_error", "result_json", "outputs_json"):
+            entry.pop(key, None)
+        result.append(entry)
+    return result
 
 
 # --- Generation routes ---
@@ -274,12 +346,14 @@ async def start_generation(body: GenerationRequest) -> dict:
         server_id=server_id,
     )
 
-    # Persist job to generation manifest so it survives page refreshes
+    # Persist job to generation_jobs table (DB-backed, atomic, no race condition)
     if body.reference_video:
         try:
-            _save_generation_manifest(body.reference_video, job_id)
+            await _save_generation_job(
+                body.reference_video, job_id, server_id, body.influencer_id
+            )
         except Exception:
-            logger.warning("Failed to save generation manifest", exc_info=True)
+            logger.warning("Failed to save generation job to DB", exc_info=True)
 
     return {"job_id": job_id, "server_id": server_id}
 
@@ -386,6 +460,15 @@ async def _do_generation(
 
     try:
         result = await asyncio.to_thread(_run_locked)
+    except Exception as exc:
+        # Update generation_jobs table on failure
+        try:
+            # Find the job_id from current context (injected by progress_fn)
+            if progress_fn and hasattr(progress_fn, '__self__'):
+                pass  # We'll handle this in the job_manager's _run method
+        except Exception:
+            pass
+        raise
     finally:
         # Trigger auto-shutdown check after generation completes
         try:

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "./client";
 import { pipelineRunToTask } from "./mappers";
+import { subscribe } from "./sse";
 import type { InfluencerOut, JobInfo, PipelineRun, Task } from "./types";
 
 // ---- Generic fetch hook ----
@@ -86,7 +87,7 @@ export function useRawPipelineRun(
   }, [influencerId, runId]);
 }
 
-// ---- Job polling hook ----
+// ---- Job polling hook (legacy, still works as fallback) ----
 
 interface UseJobPollerResult {
   job: JobInfo | null;
@@ -151,4 +152,103 @@ export function useJobPoller(
   }, [jobId, intervalMs]);
 
   return { job, loading, isComplete: isTerminal, error };
+}
+
+// ---- SSE-based job hook (real-time, replaces polling) ----
+
+/**
+ * Subscribe to real-time updates for a specific job via SSE.
+ *
+ * Does an initial REST fetch, then receives live progress and state
+ * changes via SSE. No polling interval needed.
+ */
+export function useJobSSE(jobId: string | null): UseJobPollerResult {
+  const [job, setJob] = useState<JobInfo | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isTerminal = job?.status === "completed" || job?.status === "failed";
+
+  // Initial fetch from REST API
+  useEffect(() => {
+    if (!jobId) {
+      setJob(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    api
+      .getJob(jobId)
+      .then((info) => {
+        setJob(info);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+  }, [jobId]);
+
+  // Subscribe to SSE progress updates
+  useEffect(() => {
+    if (!jobId) return;
+    return subscribe("job_progress", (data: unknown) => {
+      const d = data as { job_id: string; progress: Record<string, unknown> };
+      if (d.job_id === jobId) {
+        setJob((prev) =>
+          prev ? { ...prev, progress: { ...prev.progress, ...d.progress } } : prev,
+        );
+      }
+    });
+  }, [jobId]);
+
+  // Subscribe to SSE state changes
+  useEffect(() => {
+    if (!jobId) return;
+    return subscribe("job_state", (data: unknown) => {
+      const d = data as {
+        job_id: string;
+        status: string;
+        error?: string;
+        result?: unknown;
+      };
+      if (d.job_id === jobId) {
+        setJob((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: d.status as JobInfo["status"],
+                error: d.error ?? prev.error,
+                result: d.result ?? prev.result,
+              }
+            : prev,
+        );
+      }
+    });
+  }, [jobId]);
+
+  return { job, loading, isComplete: isTerminal, error };
+}
+
+// ---- Connection status hook ----
+
+/**
+ * Returns whether the SSE connection to the backend is alive.
+ * Shows an offline banner when the backend is unreachable.
+ */
+export function useConnectionStatus(): boolean {
+  const [online, setOnline] = useState(true);
+
+  useEffect(() => {
+    const unsub1 = subscribe("__open__", () => setOnline(true));
+    const unsub2 = subscribe("__error__", () => setOnline(false));
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, []);
+
+  return online;
 }

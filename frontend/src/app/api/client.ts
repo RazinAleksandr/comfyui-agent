@@ -5,6 +5,7 @@ import type {
   PipelineRun,
   PipelineRunRequest,
   GenerationRequest,
+  GenerationJob,
   ServerStatus,
   ServerInfo,
   AllocationInfo,
@@ -170,4 +171,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+
+  // -- Generation Jobs (DB-backed) --
+  getGenerationJobs: (runId: string) =>
+    request<GenerationJob[]>(
+      `/generation/jobs?run_id=${encodeURIComponent(runId)}`,
+    ),
 };

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from api.deps import get_config, get_job_manager, get_seed_dir, get_store
+from api.deps import get_config, get_db, get_job_manager, get_seed_dir, get_store
 from trend_parser.ingest import TrendIngestService
 from trend_parser.runner import PipelineRunnerService
 from trend_parser.schemas import PipelineRunRequest
@@ -78,7 +78,10 @@ async def list_runs(influencer_id: str, limit: int = 20) -> list[dict]:
     """List pipeline runs for an influencer, enriched with video file lists."""
     store = get_store()
     runs = store.list_pipeline_runs(influencer_id, limit=limit)
-    return [_enrich_run(run, store.data_dir) for run in runs]
+    enriched = []
+    for run in runs:
+        enriched.append(await _enrich_run(run, store.data_dir))
+    return enriched
 
 
 @router.get("/runs/{run_id}")
@@ -88,27 +91,65 @@ async def get_run(influencer_id: str, run_id: str) -> dict:
     run = store.load_pipeline_run(influencer_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return _enrich_run(run, store.data_dir)
+    return await _enrich_run(run, store.data_dir)
 
 
 @router.post("/runs/{run_id}/review")
 async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission) -> dict:
-    """Submit human review decisions for a pipeline run."""
+    """Submit human review decisions for a pipeline run.
+
+    Writes to both DB (canonical) and filesystem (audit trail).
+    """
     store = get_store()
     run = store.load_pipeline_run(influencer_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    review_path = (
-        store.influencer_pipeline_runs_dir(influencer_id) / run_id / "review_manifest.json"
-    )
+    db = get_db()
     manifest = {
         "completed": True,
         "videos": [v.model_dump() for v in body.videos],
     }
-    review_path.write_text(
-        json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+
+    # Write to DB atomically
+    try:
+        # Upsert review record
+        existing = await db.fetchone(
+            "SELECT id FROM reviews WHERE run_id = ?", [run_id]
+        )
+        if existing:
+            review_id = existing["id"]
+            await db.execute(
+                "UPDATE reviews SET completed = 1, updated_at = ? WHERE id = ?",
+                [_now(), review_id],
+            )
+            # Replace all review videos
+            await db.execute("DELETE FROM review_videos WHERE review_id = ?", [review_id])
+        else:
+            review_id = await db.execute_insert(
+                "INSERT INTO reviews (run_id, completed, created_at, updated_at) VALUES (?, 1, ?, ?)",
+                [run_id, _now(), _now()],
+            )
+
+        for v in body.videos:
+            await db.execute(
+                "INSERT INTO review_videos (review_id, file_name, approved, prompt) VALUES (?, ?, ?, ?)",
+                [review_id, v.file_name, int(v.approved), v.prompt],
+            )
+    except Exception:
+        logger.warning("Failed to save review to DB", exc_info=True)
+
+    # Also write filesystem manifest as audit trail
+    review_path = (
+        store.influencer_pipeline_runs_dir(influencer_id) / run_id / "review_manifest.json"
     )
+    try:
+        review_path.write_text(
+            json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception:
+        logger.warning("Failed to write review manifest file", exc_info=True)
+
     return manifest
 
 
@@ -135,6 +176,14 @@ async def get_signals(body: ParseRequest) -> dict:
             for platform, videos in platform_videos.items()
         },
     }
+
+
+# --- Helpers ---
+
+
+def _now() -> str:
+    from datetime import UTC, datetime
+    return datetime.now(UTC).isoformat()
 
 
 # --- Run enrichment ---
@@ -180,47 +229,53 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
         return None
 
 
-def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Enrich a pipeline run manifest with video lists and sub-report data."""
-    # Load review manifest (lives at run level, not per-platform)
     base_dir = run.get("base_dir", "")
+    run_id = run.get("run_id", "")
+
     if base_dir:
-        review_path = Path(base_dir) / "review_manifest.json"
-        review = _load_json(str(review_path))
+        # Load review from DB first, fall back to filesystem
+        review = await _load_review_from_db(run_id)
+        if review is None:
+            review_path = Path(base_dir) / "review_manifest.json"
+            review = _load_json(str(review_path))
         if review:
             run["review"] = review
 
-        # Load generation manifest and enrich with live job status + output URLs
-        gen_path = Path(base_dir) / "generation_manifest.json"
-        gen_data = _load_json(str(gen_path))
+        # Load generation data from DB
+        gen_data = await _load_generation_from_db(run_id, data_dir)
         if gen_data:
-            jm = get_job_manager()
-            for entry in gen_data.get("jobs", []):
-                job_info = jm.get(entry.get("job_id", ""))
-                if job_info:
-                    entry["status"] = job_info.status
-                    entry["progress"] = job_info.progress
-                    entry["error"] = job_info.error
-                    # Include output file URLs for completed jobs
-                    if job_info.status == "completed" and job_info.result:
-                        result = job_info.result
-                        if isinstance(result, dict):
+            run["generation"] = gen_data
+        else:
+            # Fallback: load from filesystem manifest (for backward compat)
+            gen_path = Path(base_dir) / "generation_manifest.json"
+            gen_fs = _load_json(str(gen_path))
+            if gen_fs:
+                jm = get_job_manager()
+                for entry in gen_fs.get("jobs", []):
+                    job_info = jm.get(entry.get("job_id", ""))
+                    if job_info:
+                        entry["status"] = job_info.status
+                        entry["progress"] = job_info.progress
+                        entry["error"] = job_info.error
+                        if job_info.status == "completed" and job_info.result:
+                            result = job_info.result
+                            if isinstance(result, dict):
+                                entry["outputs"] = [
+                                    {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
+                                    for p in result.get("outputs", [])
+                                    if Path(p).exists()
+                                ]
+                    if not job_info and entry.get("outputs"):
+                        raw_outputs = entry["outputs"]
+                        if raw_outputs and isinstance(raw_outputs[0], str):
                             entry["outputs"] = [
                                 {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                                for p in result.get("outputs", [])
+                                for p in raw_outputs
                                 if Path(p).exists()
                             ]
-                # Also convert manifest-persisted outputs (from previous runs
-                # or recovered jobs) to URL format if not already done.
-                if not job_info and entry.get("outputs"):
-                    raw_outputs = entry["outputs"]
-                    if raw_outputs and isinstance(raw_outputs[0], str):
-                        entry["outputs"] = [
-                            {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                            for p in raw_outputs
-                            if Path(p).exists()
-                        ]
-            run["generation"] = gen_data
+                run["generation"] = gen_fs
 
     for plat in run.get("platforms", []):
         base_dir = run.get("base_dir", "")
@@ -297,6 +352,112 @@ def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
             ]
 
     return run
+
+
+async def _load_review_from_db(run_id: str) -> dict | None:
+    """Load review data from the database."""
+    if not run_id:
+        return None
+    try:
+        db = get_db()
+        review = await db.fetchone(
+            "SELECT id, completed FROM reviews WHERE run_id = ?", [run_id]
+        )
+        if review is None:
+            return None
+        videos = await db.fetchall(
+            "SELECT file_name, approved, prompt FROM review_videos WHERE review_id = ?",
+            [review["id"]],
+        )
+        return {
+            "completed": bool(review["completed"]),
+            "videos": [
+                {"file_name": v["file_name"], "approved": bool(v["approved"]), "prompt": v["prompt"]}
+                for v in videos
+            ],
+        }
+    except Exception:
+        return None
+
+
+async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
+    """Load generation data from the database, enriched with live job status."""
+    if not run_id:
+        return None
+    try:
+        db = get_db()
+        rows = await db.fetchall(
+            "SELECT gj.*, j.status as job_status, j.progress_json, j.error as job_error, "
+            "j.result_json "
+            "FROM generation_jobs gj "
+            "LEFT JOIN jobs j ON j.job_id = gj.job_id "
+            "WHERE gj.run_id = ? "
+            "ORDER BY gj.started_at",
+            [run_id],
+        )
+        if not rows:
+            return None
+
+        jm = get_job_manager()
+        jobs_list = []
+        for row in rows:
+            entry: dict[str, Any] = {
+                "file_name": row["file_name"],
+                "job_id": row["job_id"],
+                "started_at": row["started_at"],
+            }
+
+            # Overlay live job status if available
+            live_info = jm.get(row["job_id"])
+            if live_info:
+                entry["status"] = live_info.status
+                entry["progress"] = live_info.progress
+                entry["error"] = live_info.error
+                if live_info.status == "completed" and live_info.result:
+                    result = live_info.result
+                    if isinstance(result, dict):
+                        entry["outputs"] = [
+                            {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
+                            for p in result.get("outputs", [])
+                            if Path(p).exists()
+                        ]
+            else:
+                # Use DB data
+                entry["status"] = row.get("job_status") or row.get("status", "unknown")
+                try:
+                    entry["progress"] = json.loads(row.get("progress_json") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    entry["progress"] = {}
+                entry["error"] = row.get("job_error") or row.get("error")
+
+                # Build outputs from DB or filesystem
+                outputs_json = row.get("outputs_json")
+                result_json = row.get("result_json")
+                raw_outputs = None
+                if outputs_json:
+                    try:
+                        raw_outputs = json.loads(outputs_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if not raw_outputs and result_json:
+                    try:
+                        result = json.loads(result_json)
+                        raw_outputs = result.get("outputs", [])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if raw_outputs:
+                    entry["outputs"] = [
+                        {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
+                        for p in raw_outputs
+                        if isinstance(p, str) and Path(p).exists()
+                    ]
+
+            jobs_list.append(entry)
+
+        return {"jobs": jobs_list}
+    except Exception:
+        logger.debug("Failed to load generation data from DB", exc_info=True)
+        return None
 
 
 # --- Async job functions ---
