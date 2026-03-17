@@ -45,7 +45,7 @@ class VlmThresholdsIn(BaseModel):
 
 class VlmStageConfigIn(BaseModel):
     enabled: bool = True
-    model: str = "gemini-3.1-flash-lite-preview"
+    model: str = "gemini-2.5-flash"
     api_key_env: str = "GEMINI_API_KEY"
     timeout_sec: int = Field(default=300, ge=30, le=3600)
     mock: bool = False
@@ -55,12 +55,20 @@ class VlmStageConfigIn(BaseModel):
     thresholds: VlmThresholdsIn = Field(default_factory=VlmThresholdsIn)
 
 
+class ReviewStageConfigIn(BaseModel):
+    auto: bool = False
+    model: str = "gemini-2.5-flash"
+    api_key_env: str = "GEMINI_API_KEY"
+    timeout_sec: int = Field(default=120, ge=30, le=600)
+
+
 class PipelineRunRequest(BaseModel):
     influencer_id: str = Field(..., min_length=1, max_length=128)
     platforms: dict[str, PlatformPipelineConfigIn] = Field(default_factory=dict)
     download: DownloadStageConfigIn = Field(default_factory=DownloadStageConfigIn)
     filter: FilterStageConfigIn = Field(default_factory=FilterStageConfigIn)
     vlm: VlmStageConfigIn = Field(default_factory=VlmStageConfigIn)
+    review: ReviewStageConfigIn = Field(default_factory=ReviewStageConfigIn)
 
 
 class PipelinePlatformRunOut(BaseModel):

@@ -390,6 +390,10 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
             "FROM generation_jobs gj "
             "LEFT JOIN jobs j ON j.job_id = gj.job_id "
             "WHERE gj.run_id = ? "
+            "  AND gj.id = ("
+            "    SELECT MAX(gj2.id) FROM generation_jobs gj2"
+            "    WHERE gj2.run_id = gj.run_id AND gj2.file_name = gj.file_name"
+            "  ) "
             "ORDER BY gj.started_at",
             [run_id],
         )
@@ -493,15 +497,59 @@ async def _run_pipeline(body: PipelineRunRequest, progress_fn=None) -> dict:
     runner = PipelineRunnerService(config=config, store=store, seed_dir=seed_dir)
     run_id = None
     try:
-        result = await asyncio.to_thread(runner.run, body, progress_callback=progress_fn)
+        result, auto_review_videos = await asyncio.to_thread(
+            runner.run, body, progress_callback=progress_fn,
+        )
         result_dict = result.model_dump(mode="json")
         run_id = Path(result.base_dir).name
         await _update_pipeline_run_status(body.influencer_id, run_id, result.base_dir, "completed")
+
+        # Auto-submit review if the pipeline produced one
+        if auto_review_videos is not None:
+            try:
+                await _auto_submit_review(run_id, auto_review_videos)
+            except Exception as e:
+                logger.error("Auto-submit review failed for run %s: %s", run_id, e)
+
         return result_dict
     except Exception:
         if run_id:
             await _update_pipeline_run_status(body.influencer_id, run_id, "", "failed")
         raise
+
+
+async def _auto_submit_review(run_id: str, videos: list[dict]) -> None:
+    """Write auto-generated review decisions to DB (same pattern as submit_review)."""
+    logger.info("Auto-submitting review for run %s with %d videos", run_id, len(videos))
+    try:
+        db = get_db()
+        now = _now()
+
+        existing = await db.fetchone(
+            "SELECT id FROM reviews WHERE run_id = ?", [run_id]
+        )
+        if existing:
+            review_id = existing["id"]
+            await db.execute(
+                "UPDATE reviews SET completed = 1, updated_at = ? WHERE id = ?",
+                [now, review_id],
+            )
+            await db.execute("DELETE FROM review_videos WHERE review_id = ?", [review_id])
+        else:
+            review_id = await db.execute_insert(
+                "INSERT INTO reviews (run_id, completed, created_at, updated_at) VALUES (?, 1, ?, ?)",
+                [run_id, now, now],
+            )
+
+        for v in videos:
+            await db.execute(
+                "INSERT INTO review_videos (review_id, file_name, approved, prompt) VALUES (?, ?, ?, ?)",
+                [review_id, v["file_name"], int(v["approved"]), v.get("prompt", "")],
+            )
+    except Exception:
+        logger.warning("Failed to save auto-review to DB", exc_info=True)
+        return
+    logger.info("Auto-review saved for run %s: %d videos", run_id, len(videos))
 
 
 async def _update_pipeline_run_status(

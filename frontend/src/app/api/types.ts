@@ -129,12 +129,20 @@ export interface PlatformPipelineConfig {
   selector?: { hashtags?: string[]; min_views?: number };
 }
 
+export interface ReviewStageConfig {
+  auto?: boolean;
+  model?: string;
+  api_key_env?: string;
+  timeout_sec?: number;
+}
+
 export interface PipelineRunRequest {
   influencer_id: string;
   platforms: Record<string, PlatformPipelineConfig>;
   download?: { enabled?: boolean; force?: boolean };
-  filter?: { enabled?: boolean; top_k?: number };
+  filter?: { enabled?: boolean; top_k?: number; probe_seconds?: number; workers?: number };
   vlm?: { enabled?: boolean; model?: string; max_videos?: number };
+  review?: ReviewStageConfig;
 }
 
 export interface GenerationRequest {

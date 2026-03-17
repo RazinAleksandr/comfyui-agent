@@ -235,10 +235,12 @@ class PersistentJobManager:
         )
         self._publish("job_state", {"job_id": job_id, "status": "running"})
 
-        # Inject progress callback if the function accepts it
+        # Inject progress callback and job_id if the function accepts them
         sig = inspect.signature(fn)
         if "progress_fn" in sig.parameters:
             kwargs["progress_fn"] = lambda data: self.update_progress(job_id, data)
+        if "job_id" in sig.parameters:
+            kwargs["job_id"] = job_id
 
         try:
             result = await fn(*args, **kwargs)

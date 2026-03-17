@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from trend_parser.adapters.types import RawTrendVideo
+from trend_parser.caption import CaptionRunConfig, run_caption
 from trend_parser.config import ParserConfig
 from trend_parser.downloader import TrendDownloadService
 from trend_parser.filter import CandidateFilterConfig, run_candidate_filter
@@ -14,7 +16,9 @@ from trend_parser.ingest import TrendIngestService
 from trend_parser.persona import PersonaProfile
 from trend_parser.schemas import PipelinePlatformRunOut, PipelineRunOut, PipelineRunRequest
 from trend_parser.store import FilesystemStore
-from trend_parser.vlm import SelectorRunConfig, SelectorThresholds, run_selector
+from trend_parser.vlm import SelectorRunConfig, SelectorThresholds, find_video_files, run_selector
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineRunnerService:
@@ -29,8 +33,11 @@ class PipelineRunnerService:
         self,
         request: PipelineRunRequest,
         progress_callback: Callable[[dict], None] | None = None,
-    ) -> PipelineRunOut:
-        """Run the full pipeline. Optionally report stage progress via *progress_callback*."""
+    ) -> tuple[PipelineRunOut, list[dict] | None]:
+        """Run the full pipeline. Optionally report stage progress via *progress_callback*.
+
+        Returns a 2-tuple: (pipeline result, auto-review videos or None).
+        """
         influencer = self.store.load_influencer(request.influencer_id)
         if influencer is None:
             raise ValueError(f"Influencer '{request.influencer_id}' not found")
@@ -46,7 +53,7 @@ class PipelineRunnerService:
 
         # --- progress tracking ---------------------------------------------------
         # Accumulate items across platforms so multi-platform runs show totals
-        stage_totals: dict[str, int] = {"ingestion": 0, "download": 0, "filter": 0, "vlm": 0}
+        stage_totals: dict[str, int] = {"ingestion": 0, "download": 0, "filter": 0, "vlm": 0, "review": 0}
         progress: dict = {
             "current_stage": None,
             "platforms_done": 0,
@@ -56,6 +63,7 @@ class PipelineRunnerService:
                 "download": {"status": "pending", "items": 0},
                 "filter": {"status": "pending", "items": 0},
                 "vlm": {"status": "pending", "items": 0},
+                "review": {"status": "pending", "items": 0},
             },
         }
 
@@ -133,13 +141,25 @@ class PipelineRunnerService:
             platform_outputs.append(platform_output)
             _save_manifest()  # update after each platform completes
 
+        # --- auto-review (caption generation) ------------------------------------
+        auto_review_videos: list[dict] | None = None
+        if request.review.auto and request.vlm.enabled and request.vlm.sync_folders:
+            auto_review_videos = self._collect_auto_review(
+                request=request,
+                base_dir=base_dir,
+                enabled_platforms=enabled_platforms,
+                progress_report=_report,
+            )
+        elif request.review.auto:
+            logger.warning("auto_review=True but VLM sync_folders=False or VLM disabled — skipping auto-review")
+
         result = PipelineRunOut(
             influencer_id=request.influencer_id,
             started_at=started_at,
             base_dir=str(base_dir.resolve()),
             platforms=platform_outputs,
         )
-        return result
+        return result, auto_review_videos
 
     def _run_platform(
         self,
@@ -277,6 +297,60 @@ class PipelineRunnerService:
             accepted=accepted,
             rejected=rejected,
         )
+
+    def _collect_auto_review(
+        self,
+        *,
+        request: PipelineRunRequest,
+        base_dir: Path,
+        enabled_platforms: list[str],
+        progress_report: Callable[..., None] | None = None,
+    ) -> list[dict]:
+        """Run caption generation on VLM-selected videos for auto-review."""
+
+        def _report(stage: str, status: str, **extra: object) -> None:
+            if progress_report:
+                progress_report(stage, status, **extra)
+
+        # Gather video files from each platform's selected_dir
+        video_paths: list[Path] = []
+        for platform in enabled_platforms:
+            selected_dir = base_dir / platform / "selected"
+            if selected_dir.is_dir():
+                video_paths.extend(find_video_files(selected_dir, max_videos=200))
+
+        if not video_paths:
+            _report("review", "completed", items=0)
+            return []
+
+        # Check if this influencer has a LoRA configured
+        has_lora = False
+        try:
+            from comfy_pipeline.config import WorkflowConfig
+            wf_config = WorkflowConfig.from_yaml(
+                Path(__file__).resolve().parents[2] / "configs" / "wan_animate.yaml"
+            )
+            has_lora = wf_config.characters.get(request.influencer_id) is not None
+        except Exception as exc:
+            logger.warning("Could not load WorkflowConfig for LoRA check, defaulting has_lora=False: %s", exc)
+
+        _report("review", "running")
+        results = run_caption(
+            CaptionRunConfig(
+                video_paths=video_paths,
+                model=request.review.model,
+                api_key_env=request.review.api_key_env,
+                timeout_sec=request.review.timeout_sec,
+                has_lora=has_lora,
+            )
+        )
+
+        auto_videos = [
+            {"file_name": r.file_name, "approved": True, "prompt": r.caption}
+            for r in results
+        ]
+        _report("review", "completed", items=len(auto_videos))
+        return auto_videos
 
     def _to_persona(self, influencer) -> PersonaProfile | None:
         persona_path = self.store.influencer_dir(influencer.influencer_id) / "persona.json"

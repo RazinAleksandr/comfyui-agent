@@ -292,6 +292,10 @@ async def list_generation_jobs(run_id: str) -> list[dict]:
         "FROM generation_jobs gj "
         "LEFT JOIN jobs j ON j.job_id = gj.job_id "
         "WHERE gj.run_id = ? "
+        "  AND gj.id = ("
+        "    SELECT MAX(gj2.id) FROM generation_jobs gj2"
+        "    WHERE gj2.run_id = gj.run_id AND gj2.file_name = gj.file_name"
+        "  ) "
         "ORDER BY gj.started_at",
         [run_id],
     )
@@ -429,6 +433,7 @@ async def _do_generation(
     influencer_id: str,
     server_id: str,
     progress_fn: Callable[[dict], None] | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """Run generation via VastAgentService."""
     manager = get_server_manager()
@@ -487,13 +492,11 @@ async def _do_generation(
     try:
         result = await asyncio.to_thread(_run_locked)
     except Exception as exc:
-        # Update generation_jobs table on failure
-        try:
-            # Find the job_id from current context (injected by progress_fn)
-            if progress_fn and hasattr(progress_fn, '__self__'):
-                pass  # We'll handle this in the job_manager's _run method
-        except Exception:
-            pass
+        if job_id:
+            try:
+                await _update_generation_job_failed(job_id, str(exc))
+            except Exception:
+                pass
         raise
     finally:
         # Trigger auto-shutdown check after generation completes
@@ -511,6 +514,12 @@ async def _do_generation(
             logger.info("Postprocessed: %s", pp_path)
     except Exception:
         logger.warning("Postprocessing failed", exc_info=True)
+
+    if job_id:
+        try:
+            await _update_generation_job_complete(job_id, outputs, result.output_dir)
+        except Exception:
+            logger.warning("Failed to update generation_jobs on completion", exc_info=True)
 
     return {
         "influencer_id": influencer_id,

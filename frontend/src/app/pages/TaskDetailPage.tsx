@@ -1137,7 +1137,12 @@ function GenerationPanel({
 
   const runAll = async () => {
     for (let i = 0; i < approvedVideos.length; i++) {
-      await runGeneration(approvedVideos[i], i);
+      const video = approvedVideos[i];
+      const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
+      if (existingJob && ["completed", "running", "pending"].includes(existingJob.status ?? "")) {
+        continue;
+      }
+      await runGeneration(video, i);
     }
     onJobStarted();
   };

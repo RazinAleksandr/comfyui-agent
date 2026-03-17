@@ -35,8 +35,13 @@ import {
   Play,
   Pencil,
   Trash2,
+  ChevronDown,
+  ChevronRight,
+  Settings2,
 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Separator } from "../components/ui/separator";
+import { Switch } from "../components/ui/switch";
 
 const stageIcons = {
   trend_ingestion: TrendingUp,
@@ -105,6 +110,15 @@ export default function AvatarDetailPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+
+  // Pipeline stage config (lifted so cards on page can edit them)
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  const [filterTopK, setFilterTopK] = useState(15);
+  const [vlmMaxVideos, setVlmMaxVideos] = useState(15);
+  const [autoReview, setAutoReview] = useState(false);
+  const [captionModel, setCaptionModel] = useState("gemini-2.0-flash");
+
+  const toggleStage = (stage: string) => setExpandedStage((p) => (p === stage ? null : stage));
   const { job: activeJob, isComplete: jobDone } = useJobSSE(activeJobId);
 
   // On mount, restore any active pipeline job for this influencer
@@ -272,25 +286,96 @@ export default function AvatarDetailPage() {
 
         {/* Pipeline Stages Overview */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-          {Object.entries(stageIcons).map(([key, Icon]) => (
-            <Card key={key} className="hover:shadow-md transition-shadow">
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
-                    <Icon className="w-5 h-5 text-purple-600" />
+          {Object.entries(stageIcons).map(([key, Icon]) => {
+            const isConfigurable = key === "candidate_filter" || key === "vlm_scoring" || key === "review";
+            const isExpanded = expandedStage === key;
+            return (
+              <Card
+                key={key}
+                className={`transition-shadow ${isConfigurable ? "cursor-pointer hover:shadow-md" : ""} ${isExpanded ? "ring-2 ring-purple-300 shadow-md" : ""}`}
+                onClick={isConfigurable ? () => toggleStage(key) : undefined}
+              >
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isExpanded ? "bg-purple-200" : "bg-purple-100"}`}>
+                        <Icon className="w-5 h-5 text-purple-600" />
+                      </div>
+                      <CardTitle className="text-lg">
+                        {stageTitles[key as keyof typeof stageTitles]}
+                      </CardTitle>
+                    </div>
+                    {isConfigurable && (
+                      isExpanded
+                        ? <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                        : <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    )}
                   </div>
-                  <CardTitle className="text-lg">
-                    {stageTitles[key as keyof typeof stageTitles]}
-                  </CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-slate-600">
-                  {stageDescriptions[key as keyof typeof stageDescriptions]}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
+                </CardHeader>
+                <CardContent onClick={(e) => e.stopPropagation()}>
+                  <p className="text-sm text-slate-600 mb-3">
+                    {stageDescriptions[key as keyof typeof stageDescriptions]}
+                  </p>
+                  {isExpanded && key === "candidate_filter" && (
+                    <div className="space-y-1 pt-2 border-t">
+                      <Label htmlFor="cfg-filter-top-k" className="text-xs text-slate-500">Top K</Label>
+                      <Input
+                        id="cfg-filter-top-k"
+                        type="number"
+                        value={filterTopK}
+                        onChange={(e) => setFilterTopK(parseInt(e.target.value) || 15)}
+                        min={1}
+                        max={200}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  )}
+                  {isExpanded && key === "vlm_scoring" && (
+                    <div className="space-y-1 pt-2 border-t">
+                      <Label htmlFor="cfg-vlm-max" className="text-xs text-slate-500">Max Videos</Label>
+                      <Input
+                        id="cfg-vlm-max"
+                        type="number"
+                        value={vlmMaxVideos}
+                        onChange={(e) => setVlmMaxVideos(parseInt(e.target.value) || 15)}
+                        min={1}
+                        max={200}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  )}
+                  {isExpanded && key === "review" && (
+                    <div className="space-y-3 pt-2 border-t">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="cfg-auto-review" className="text-xs text-slate-500">Auto-review (AI captions)</Label>
+                        <Switch
+                          id="cfg-auto-review"
+                          checked={autoReview}
+                          onCheckedChange={setAutoReview}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      {autoReview && (
+                        <div className="space-y-1">
+                          <Label htmlFor="cfg-caption-model" className="text-xs text-slate-500">Caption Model</Label>
+                          <Select value={captionModel} onValueChange={setCaptionModel}>
+                            <SelectTrigger id="cfg-caption-model" size="sm" onClick={(e) => e.stopPropagation()}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                              <SelectItem value="gemini-2.5-flash-preview-05-20">Gemini 2.5 Flash</SelectItem>
+                              <SelectItem value="gemini-2.5-pro-preview-05-06">Gemini 2.5 Pro</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
 
         {/* Generation Tasks */}
@@ -311,6 +396,10 @@ export default function AvatarDetailPage() {
             <StartPipelineDialog
               influencerId={influencer.influencer_id}
               defaultHashtags={influencer.hashtags ?? []}
+              filterTopK={filterTopK}
+              vlmMaxVideos={vlmMaxVideos}
+              autoReview={autoReview}
+              captionModel={captionModel}
               onStarted={(jobId) => {
                 setPipelineDialogOpen(false);
                 setActiveJobId(jobId);
@@ -430,7 +519,7 @@ function LiveTaskCard({ job, isDone }: { job: JobInfo; isDone: boolean }) {
     download: stages.download ?? { status: "pending" },
     candidate_filter: stages.filter ?? { status: "pending" },
     vlm_scoring: stages.vlm ?? { status: "pending" },
-    review: { status: "pending" },
+    review: stages.review ?? { status: "pending" },
     generation: { status: "pending" },
   };
 
@@ -644,10 +733,18 @@ function DeleteInfluencerDialog({
 function StartPipelineDialog({
   influencerId,
   defaultHashtags,
+  filterTopK,
+  vlmMaxVideos,
+  autoReview,
+  captionModel,
   onStarted,
 }: {
   influencerId: string;
   defaultHashtags: string[];
+  filterTopK: number;
+  vlmMaxVideos: number;
+  autoReview: boolean;
+  captionModel: string;
   onStarted: (jobId: string) => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
@@ -698,6 +795,9 @@ function StartPipelineDialog({
         const { job_id } = await api.startPipeline({
           influencer_id: influencerId,
           platforms,
+          filter: { top_k: filterTopK },
+          vlm: { max_videos: vlmMaxVideos },
+          ...(autoReview ? { review: { auto: true, model: captionModel } } : {}),
         });
         onStarted(job_id);
       } catch (err) {
@@ -706,7 +806,7 @@ function StartPipelineDialog({
         setSubmitting(false);
       }
     },
-    [influencerId, tiktok, instagram, defaultSources, onStarted],
+    [influencerId, tiktok, instagram, defaultSources, filterTopK, vlmMaxVideos, autoReview, captionModel, onStarted],
   );
 
   return (
@@ -739,8 +839,20 @@ function StartPipelineDialog({
           <Label htmlFor="hashtags">Hashtags (comma-separated)</Label>
           <Input id="hashtags" name="hashtags" defaultValue={defaultHashtags.join(", ")} />
         </div>
+
+        {/* Stage config summary */}
+        <div className="rounded-lg bg-slate-50 border px-3 py-2 text-xs text-slate-500 space-y-0.5">
+          <div className="flex items-center gap-1.5 font-medium text-slate-600 mb-1">
+            <Settings2 className="w-3.5 h-3.5" />
+            Stage config (edit on the cards above)
+          </div>
+          <div>Filter — Top K: <span className="font-medium text-slate-700">{filterTopK}</span></div>
+          <div>VLM — Max videos: <span className="font-medium text-slate-700">{vlmMaxVideos}</span></div>
+          <div>Review — Auto: <span className="font-medium text-slate-700">{autoReview ? `yes (${captionModel})` : "no"}</span></div>
+        </div>
+
         {defaultsError && (
-          <p className="text-sm text-amber-600">Could not load pipeline defaults — using fallback values.</p>
+          <p className="text-sm text-amber-600">Could not load pipeline defaults -- using fallback values.</p>
         )}
         {error && <p className="text-sm text-red-600">{error}</p>}
         <DialogFooter>

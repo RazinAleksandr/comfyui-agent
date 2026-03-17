@@ -72,6 +72,7 @@ def call_gemini(
     video_path: Path,
     prompt: str,
     timeout_sec: int,
+    temperature: float = 0.1,
 ) -> tuple[dict, str]:
     mime_type = MIME_BY_SUFFIX.get(video_path.suffix.lower())
     if not mime_type:
@@ -80,7 +81,7 @@ def call_gemini(
     binary = video_path.read_bytes()
     payload = {
         "generationConfig": {
-            "temperature": 0.1,
+            "temperature": temperature,
             "responseMimeType": "application/json",
         },
         "contents": [
