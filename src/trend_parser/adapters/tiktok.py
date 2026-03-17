@@ -38,7 +38,19 @@ class TikTokCustomAdapter:
             raise RuntimeError(
                 "TikTokApi is not installed. Install with: pip install -e '.[vps]'"
             )
-        return self._run_async(self._fetch_async(limit=limit, selector=selector))
+        try:
+            return self._run_async(self._fetch_async(limit=limit, selector=selector))
+        except RuntimeError as exc:
+            if "failed" not in str(exc).lower():
+                raise
+            # All hashtags failed — try refreshing the msToken once
+            logger.info("[tiktok_custom] fetch failed, attempting token refresh...")
+            new_token = self._run_async(self._refresh_ms_token())
+            if not new_token:
+                raise
+            logger.info("[tiktok_custom] token refreshed, retrying fetch...")
+            self.ms_tokens_csv = new_token
+            return self._run_async(self._fetch_async(limit=limit, selector=selector))
 
     async def _fetch_async(self, limit: int, selector: TrendFetchSelector | None) -> list[RawTrendVideo]:
         hashtags = self._selector_hashtags(selector)
@@ -51,6 +63,7 @@ class TikTokCustomAdapter:
         per_tag_limit = max(1, (max(1, int(limit)) + len(hashtags) - 1) // len(hashtags))
 
         unique: dict[str, RawTrendVideo] = {}
+        failures: list[str] = []
         async with TikTokApi() as api:
             await api.create_sessions(
                 ms_tokens=ms_tokens,
@@ -76,7 +89,14 @@ class TikTokCustomAdapter:
                             return list(unique.values())[:limit]
                 except Exception as exc:
                     logger.warning("[tiktok_custom] hashtag '%s' failed: %s", tag, exc)
+                    failures.append(f"{tag}: {exc}")
                     continue
+        if not unique and failures:
+            raise RuntimeError(
+                f"All {len(failures)} TikTok hashtag lookup(s) failed. "
+                "ms_tokens may be expired — refresh from browser cookies. "
+                f"Errors: {'; '.join(failures)}"
+            )
         return list(unique.values())[:limit]
 
     def _to_video(self, data: dict[str, Any]) -> RawTrendVideo | None:
@@ -180,6 +200,35 @@ class TikTokCustomAdapter:
     def _ms_tokens(self) -> list[str]:
         tokens = [t.strip() for t in self.ms_tokens_csv.split(",") if t.strip()]
         return tokens or [""]
+
+    @staticmethod
+    async def _refresh_ms_token() -> str | None:
+        """Visit TikTok in a headless browser to obtain a fresh msToken cookie."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.warning("[tiktok_custom] playwright not available for token refresh")
+            return None
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(headless=True, args=["--headless=new"])
+            context = await browser.new_context()
+            page = await context.new_page()
+            try:
+                await page.goto("https://www.tiktok.com", wait_until="domcontentloaded", timeout=30000)
+                for _ in range(10):
+                    await asyncio.sleep(2)
+                    cookies = await context.cookies()
+                    for c in cookies:
+                        if c["name"] == "msToken" and len(c["value"]) > 20:
+                            logger.info("[tiktok_custom] refreshed msToken successfully")
+                            return c["value"]
+            finally:
+                await browser.close()
+                await pw.stop()
+        except Exception as exc:
+            logger.warning("[tiktok_custom] token refresh failed: %s", exc)
+        return None
 
     def _to_int(self, value: Any) -> int:
         try:

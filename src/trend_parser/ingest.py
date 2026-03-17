@@ -169,6 +169,11 @@ class TrendIngestService:
         if source == "tiktok_custom":
             if platform != "tiktok":
                 raise RuntimeError("source=tiktok_custom supports only platform=tiktok.")
+            if not self.config.tiktok_ms_tokens:
+                raise RuntimeError(
+                    "source=tiktok_custom requires TIKTOK_MS_TOKENS. "
+                    "Get the msToken cookie from TikTok in your browser and set it in .env."
+                )
             videos = TikTokCustomAdapter(
                 query=self.config.tiktok_query,
                 ms_tokens_csv=self.config.tiktok_ms_tokens,

@@ -72,7 +72,6 @@ def build_prompt(
 You are a strict video suitability judge for AI subject substitution (face/person replacement).
 
 Channel theme: {theme}
-Target hashtags: {hashtags_text}
 
 Persona profile:
 {persona_block}

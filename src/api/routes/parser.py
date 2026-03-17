@@ -491,5 +491,50 @@ async def _run_pipeline(body: PipelineRunRequest, progress_fn=None) -> dict:
     store = get_store()
     seed_dir = get_seed_dir()
     runner = PipelineRunnerService(config=config, store=store, seed_dir=seed_dir)
-    result = await asyncio.to_thread(runner.run, body, progress_callback=progress_fn)
-    return result.model_dump(mode="json")
+    run_id = None
+    try:
+        result = await asyncio.to_thread(runner.run, body, progress_callback=progress_fn)
+        result_dict = result.model_dump(mode="json")
+        run_id = Path(result.base_dir).name
+        await _update_pipeline_run_status(body.influencer_id, run_id, result.base_dir, "completed")
+        return result_dict
+    except Exception:
+        if run_id:
+            await _update_pipeline_run_status(body.influencer_id, run_id, "", "failed")
+        raise
+
+
+async def _update_pipeline_run_status(
+    influencer_id: str, run_id: str, base_dir: str, status: str,
+) -> None:
+    """Ensure pipeline run exists in DB with the correct status."""
+    try:
+        db = get_db()
+        now = _now()
+        existing = await db.fetchone(
+            "SELECT 1 FROM pipeline_runs WHERE run_id = ?", [run_id]
+        )
+        if existing:
+            await db.execute(
+                "UPDATE pipeline_runs SET status = ?, updated_at = ? WHERE run_id = ?",
+                [status, now, run_id],
+            )
+        else:
+            # Row doesn't exist yet — insert it with the final status directly
+            inf_exists = await db.fetchone(
+                "SELECT 1 FROM influencers WHERE influencer_id = ?", [influencer_id]
+            )
+            if not inf_exists and influencer_id:
+                await db.execute(
+                    "INSERT OR IGNORE INTO influencers (influencer_id, name, created_at, updated_at) "
+                    "VALUES (?, 'Influencer', ?, ?)",
+                    [influencer_id, now, now],
+                )
+            await db.execute(
+                "INSERT OR IGNORE INTO pipeline_runs "
+                "(run_id, influencer_id, started_at, base_dir, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [run_id, influencer_id, now, base_dir, status, now, now],
+            )
+    except Exception:
+        logger.debug("Failed to update pipeline run %s status to %s", run_id, status, exc_info=True)

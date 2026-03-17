@@ -179,7 +179,21 @@ async def server_status(influencer_id: str | None = None) -> dict:
                 status["is_borrowable"] = True
             return status
 
-    # Fallback: check any server in registry
+    if influencer_id:
+        # Influencer has no own server and no borrowable server — report offline
+        return {
+            "status": "offline",
+            "instance_id": None,
+            "ssh_host": None,
+            "ssh_port": None,
+            "actual_status": None,
+            "dph_total": None,
+            "ssh_reachable": False,
+            "startup_job_id": None,
+            "startup_job_status": None,
+        }
+
+    # Fallback (no influencer_id): check any server in registry
     all_servers = manager.list_servers()
     if all_servers:
         first = all_servers[0]
