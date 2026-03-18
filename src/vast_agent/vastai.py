@@ -84,6 +84,17 @@ class VastClient:
 
         Returns list of offers sorted by price (cheapest first).
         """
+        # Resolve geolocation codes before building filters.
+        # VastAI's geolocation field contains full strings like "Spain, ES",
+        # so server-side {"eq": "ES"} / {"in": ["ES"]} won't match.
+        # We store the codes and filter client-side after the API call.
+        geo_codes: list[str] = []
+        if geolocation:
+            if geolocation.upper() == "EU":
+                geo_codes = self.EU_COUNTRIES
+            else:
+                geo_codes = [c.strip().upper() for c in geolocation.split(",")]
+
         filters: dict = {
             "gpu_name": {"eq": gpu_name},
             "gpu_ram": {"gte": min_gpu_ram},
@@ -94,20 +105,23 @@ class VastClient:
             "order": [["dph_total", "asc"]],
             "type": "on-demand",
         }
-        if geolocation:
-            if geolocation.upper() == "EU":
-                filters["geolocation"] = {"in": self.EU_COUNTRIES}
-            else:
-                codes = [c.strip().upper() for c in geolocation.split(",")]
-                if len(codes) == 1:
-                    filters["geolocation"] = {"eq": codes[0]}
-                else:
-                    filters["geolocation"] = {"in": codes}
         if extra_filters:
             filters.update(extra_filters)
 
         data = self._request("POST", "/api/v0/bundles/", json=filters)
         offers = data.get("offers", [])
+
+        # Filter by geolocation client-side.
+        # API field may be "Spain, ES" or just "ES" depending on the endpoint version.
+        if geo_codes:
+            offers = [
+                o for o in offers
+                if any(
+                    (geo := o.get("geolocation", "").upper()) == code
+                    or geo.endswith(f", {code}")
+                    for code in geo_codes
+                )
+            ]
 
         # Filter by bandwidth price client-side (not supported by API)
         if max_bw_price > 0:

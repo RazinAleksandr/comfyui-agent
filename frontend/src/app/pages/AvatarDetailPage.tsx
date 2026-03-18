@@ -116,7 +116,7 @@ export default function AvatarDetailPage() {
   const [filterTopK, setFilterTopK] = useState(15);
   const [vlmMaxVideos, setVlmMaxVideos] = useState(15);
   const [autoReview, setAutoReview] = useState(true);
-  const [captionModel, setCaptionModel] = useState("gemini-2.0-flash");
+  const [captionModel, setCaptionModel] = useState("gemini-2.5-flash");
 
   const toggleStage = (stage: string) => setExpandedStage((p) => (p === stage ? null : stage));
   const { job: activeJob, isComplete: jobDone } = useJobSSE(activeJobId);
@@ -363,9 +363,9 @@ export default function AvatarDetailPage() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
-                              <SelectItem value="gemini-2.5-flash-preview-05-20">Gemini 2.5 Flash</SelectItem>
-                              <SelectItem value="gemini-2.5-pro-preview-05-06">Gemini 2.5 Pro</SelectItem>
+                              <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
+                              <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                              <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
