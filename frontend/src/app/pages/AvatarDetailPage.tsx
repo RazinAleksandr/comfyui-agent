@@ -115,7 +115,7 @@ export default function AvatarDetailPage() {
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
   const [filterTopK, setFilterTopK] = useState(15);
   const [vlmMaxVideos, setVlmMaxVideos] = useState(15);
-  const [autoReview, setAutoReview] = useState(false);
+  const [autoReview, setAutoReview] = useState(true);
   const [captionModel, setCaptionModel] = useState("gemini-2.0-flash");
 
   const toggleStage = (stage: string) => setExpandedStage((p) => (p === stage ? null : stage));

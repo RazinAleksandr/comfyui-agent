@@ -43,6 +43,34 @@ export interface FilterCandidate {
   scores?: { quality: number; temporal_stability: number; swap_compatibility: number; final: number };
 }
 
+export interface FilterRejectedCandidate {
+  file_name: string;
+  platform: string;
+  views: number;
+  metrics?: { duration_sec: number; width: number; height: number; fps: number };
+  scores?: { quality: number; temporal_stability: number; swap_compatibility: number; final: number };
+  reject_reasons: string[];
+}
+
+export interface VlmVideoDetail {
+  file_name: string;
+  auto_decision: string;
+  summary: string;
+  scores: {
+    theme_match?: number;
+    persona_fit?: number;
+    single_subject_clarity?: number;
+    face_visibility?: number;
+    motion_stability?: number;
+    occlusion_risk?: number;
+    scene_cut_complexity?: number;
+    substitution_readiness?: number;
+  };
+  confidence: number;
+  reasons: string[];
+  decision?: string;
+}
+
 export interface VlmAccepted {
   file_name: string;
   readiness: number;
@@ -75,8 +103,10 @@ export interface PipelinePlatformRun {
   download_videos?: VideoFile[];
   filtered_videos?: VideoFile[];
   selected_videos?: VideoFile[];
-  filter_report?: { total_candidates: number; accepted: number; rejected: number; top_k: number; top_candidates: FilterCandidate[] };
+  filter_report?: { total_candidates: number; accepted: number; rejected: number; top_k: number; top_candidates: FilterCandidate[]; rejected_candidates?: FilterRejectedCandidate[] };
   vlm_report?: { model: string; total: number; accepted: number; rejected: number; accepted_top: VlmAccepted[] };
+  vlm_video_details?: VlmVideoDetail[];
+  rejected_videos?: VideoFile[];
   ingested_details?: IngestedDetail[];
 }
 

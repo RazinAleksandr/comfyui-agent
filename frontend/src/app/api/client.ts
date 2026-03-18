@@ -103,6 +103,46 @@ export const api = {
       `/parser/runs/${encodeURIComponent(runId)}?influencer_id=${encodeURIComponent(influencerId)}`,
     ),
 
+  rerunVlm: (runId: string, body: {
+    influencer_id: string;
+    theme?: string;
+    model?: string;
+    max_videos?: number;
+    thresholds?: {
+      min_readiness?: number;
+      min_confidence?: number;
+      min_persona_fit?: number;
+      max_occlusion_risk?: number;
+      max_scene_cut_complexity?: number;
+    } | null;
+    custom_persona_description?: string | null;
+    custom_video_requirements?: string | null;
+  }) =>
+    request<{ job_id: string }>(
+      `/parser/runs/${encodeURIComponent(runId)}/rerun-vlm`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+
+  rerunFilter: (runId: string, body: {
+    influencer_id: string;
+    top_k?: number;
+    probe_seconds?: number;
+  }) =>
+    request<{ job_id: string }>(
+      `/parser/runs/${encodeURIComponent(runId)}/rerun-filter`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+
+  promoteVideo: (runId: string, body: {
+    influencer_id: string;
+    file_name: string;
+    prompt: string;
+  }) =>
+    request<{ status: string; file_name: string }>(
+      `/parser/runs/${encodeURIComponent(runId)}/promote`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+
   // -- Review --
   submitReview: (influencerId: string, runId: string, videos: ReviewVideo[]) =>
     request<ReviewData>(

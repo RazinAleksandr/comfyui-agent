@@ -1,4 +1,4 @@
-import type { PipelineRun, Task, StageResult, VideoPreview, IngestedDetail, VlmAccepted, ReviewVideo } from "./types";
+import type { PipelineRun, Task, StageResult, VideoPreview, IngestedDetail, VlmAccepted, ReviewVideo, VlmVideoDetail, FilterRejectedCandidate } from "./types";
 
 /**
  * Convert a backend PipelineRun manifest (enriched) into the frontend Task shape
@@ -81,6 +81,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
     final_score: number;
   }> = [];
 
+  const allFilterRejected: FilterRejectedCandidate[] = [];
   for (const p of run.platforms) {
     if (p.filter_report) {
       filterAccepted += p.filter_report.accepted ?? 0;
@@ -105,6 +106,9 @@ export function pipelineRunToTask(run: PipelineRun): Task {
           duration: c.metrics?.duration_sec ? `${c.metrics.duration_sec.toFixed(1)}s` : undefined,
         });
       }
+      for (const rc of p.filter_report.rejected_candidates ?? []) {
+        allFilterRejected.push(rc);
+      }
     }
     // Add video thumbnails from filtered directory
     for (const v of p.filtered_videos ?? []) {
@@ -126,6 +130,7 @@ export function pipelineRunToTask(run: PipelineRun): Task {
           passed: filterAccepted,
           rejected: filterRejected,
           candidates: filterCandidates,
+          rejected_candidates: allFilterRejected,
         },
         videos: filterVideos.length > 0 ? filterVideos : undefined,
       }
@@ -134,6 +139,8 @@ export function pipelineRunToTask(run: PipelineRun): Task {
   // -- Stage 4: VLM Scoring --
   const vlmVideos: VideoPreview[] = [];
   const vlmAccepted: VlmAccepted[] = [];
+  const vlmRejectedItems: VlmVideoDetail[] = [];
+  const rejectedVideoUrls: Record<string, string> = {};
   let vlmModel = "";
 
   for (const p of run.platforms) {
@@ -149,6 +156,14 @@ export function pipelineRunToTask(run: PipelineRun): Task {
           approved: true,
         });
       }
+    }
+    for (const vd of p.vlm_video_details ?? []) {
+      if (vd.auto_decision !== "accept") {
+        vlmRejectedItems.push(vd);
+      }
+    }
+    for (const rv of p.rejected_videos ?? []) {
+      rejectedVideoUrls[rv.file_name] = rv.url;
     }
     for (const v of p.selected_videos ?? []) {
       const existing = vlmVideos.find((sv) => sv.id === v.file_name);
@@ -169,6 +184,8 @@ export function pipelineRunToTask(run: PipelineRun): Task {
           rejected: totalRejected,
           model: vlmModel,
           accepted_items: vlmAccepted,
+          rejected_items: vlmRejectedItems,
+          rejected_video_urls: rejectedVideoUrls,
         },
         videos: vlmVideos.length > 0 ? vlmVideos : undefined,
       }
@@ -181,11 +198,12 @@ export function pipelineRunToTask(run: PipelineRun): Task {
 
   if (reviewCompleted && reviewData.videos) {
     for (const rv of reviewData.videos) {
-      // Find the matching VLM video for thumbnail
+      // Find thumbnail: prefer selected_videos (via vlmVideos), fall back to rejected_videos
       const vlmV = vlmVideos.find((v) => v.id === rv.file_name);
+      const thumbnail = vlmV?.thumbnail || rejectedVideoUrls[rv.file_name] || "";
       reviewVideos.push({
         id: rv.file_name,
-        thumbnail: vlmV?.thumbnail ?? "",
+        thumbnail,
         title: rv.file_name,
         approved: rv.approved,
         prompt: rv.prompt || undefined,

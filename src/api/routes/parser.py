@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api.deps import get_config, get_db, get_job_manager, get_seed_dir, get_store
+from trend_parser.filter import CandidateFilterConfig, run_candidate_filter
 from trend_parser.ingest import TrendIngestService
+from trend_parser.persona import PersonaProfile
 from trend_parser.runner import PipelineRunnerService
-from trend_parser.schemas import PipelineRunRequest
+from trend_parser.schemas import PipelineRunRequest, VlmThresholdsIn
+from trend_parser.vlm import SelectorRunConfig, SelectorThresholds, run_selector
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,28 @@ class ReviewVideoItem(BaseModel):
 
 class ReviewSubmission(BaseModel):
     videos: list[ReviewVideoItem]
+
+
+class RerunVlmRequest(BaseModel):
+    influencer_id: str
+    theme: str = "influencer channel"
+    model: str = "gemini-2.5-flash"
+    max_videos: int = Field(default=30, ge=1, le=200)
+    thresholds: VlmThresholdsIn | None = None
+    custom_persona_description: str | None = None
+    custom_video_requirements: str | None = None
+
+
+class RerunFilterRequest(BaseModel):
+    influencer_id: str
+    top_k: int = Field(default=15, ge=1, le=200)
+    probe_seconds: int = Field(default=8, ge=3, le=120)
+
+
+class PromoteVideoRequest(BaseModel):
+    influencer_id: str
+    file_name: str
+    prompt: str
 
 
 # --- Routes ---
@@ -142,6 +168,26 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
     except Exception:
         logger.warning("Failed to save review to DB", exc_info=True)
 
+    # For approved videos not yet in selected/, copy from rejected/filtered/downloads/
+    # (handles the case where the user promoted a VLM-rejected video via review UI)
+    base_dir = run.get("base_dir", "")
+    approved_names = {v.file_name for v in body.videos if v.approved}
+    if approved_names and base_dir:
+        for plat in run.get("platforms", []):
+            platform_name = plat.get("platform", "")
+            plat_dir = Path(base_dir) / platform_name
+            sel_dir = plat_dir / "selected"
+            for file_name in approved_names:
+                if (sel_dir / file_name).exists():
+                    continue
+                for search_dir in [plat_dir / "rejected", plat_dir / "filtered", plat_dir / "downloads"]:
+                    src = search_dir / file_name
+                    if src.is_file():
+                        sel_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, sel_dir / file_name)
+                        logger.info("Copied promoted video %s → selected/", file_name)
+                        break
+
     return manifest
 
 
@@ -168,6 +214,99 @@ async def get_signals(body: ParseRequest) -> dict:
             for platform, videos in platform_videos.items()
         },
     }
+
+
+@router.post("/runs/{run_id}/rerun-vlm")
+async def rerun_vlm(run_id: str, body: RerunVlmRequest) -> dict:
+    """Re-run VLM scoring on existing filtered videos with new params."""
+    store = get_store()
+    run = store.load_pipeline_run(body.influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    jm = get_job_manager()
+    job_id = jm.submit_tagged(
+        _rerun_vlm,
+        {"type": "rerun_vlm", "influencer_id": body.influencer_id},
+        run, body,
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/runs/{run_id}/rerun-filter")
+async def rerun_filter(run_id: str, body: RerunFilterRequest) -> dict:
+    """Re-run candidate filter on existing downloaded videos."""
+    store = get_store()
+    run = store.load_pipeline_run(body.influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    jm = get_job_manager()
+    job_id = jm.submit_tagged(
+        _rerun_filter,
+        {"type": "rerun_filter", "influencer_id": body.influencer_id},
+        run, body,
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/runs/{run_id}/promote")
+async def promote_video(run_id: str, body: PromoteVideoRequest) -> dict:
+    """Promote a rejected video to the approved review list for generation."""
+    store = get_store()
+    run = store.load_pipeline_run(body.influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    await _ensure_run_in_db(run)
+    db = get_db()
+
+    # Get or create review record
+    existing = await db.fetchone("SELECT id FROM reviews WHERE run_id = ?", [run_id])
+    if existing:
+        review_id = existing["id"]
+    else:
+        review_id = await db.execute_insert(
+            "INSERT INTO reviews (run_id, completed, created_at, updated_at) VALUES (?, 1, ?, ?)",
+            [run_id, _now(), _now()],
+        )
+
+    # Upsert the video as approved
+    existing_video = await db.fetchone(
+        "SELECT id FROM review_videos WHERE review_id = ? AND file_name = ?",
+        [review_id, body.file_name],
+    )
+    if existing_video:
+        await db.execute(
+            "UPDATE review_videos SET approved = 1, prompt = ? WHERE id = ?",
+            [body.prompt, existing_video["id"]],
+        )
+    else:
+        await db.execute(
+            "INSERT INTO review_videos (review_id, file_name, approved, prompt) VALUES (?, ?, 1, ?)",
+            [review_id, body.file_name, body.prompt],
+        )
+
+    # Mark review as completed
+    await db.execute(
+        "UPDATE reviews SET completed = 1, updated_at = ? WHERE id = ?",
+        [_now(), review_id],
+    )
+
+    # Copy the video file into selected/ so generation can find it
+    base_dir = run.get("base_dir", "")
+    for plat in run.get("platforms", []):
+        platform_name = plat.get("platform", "")
+        plat_dir = Path(base_dir) / platform_name
+        for search_dir in [plat_dir / "rejected", plat_dir / "filtered", plat_dir / "downloads"]:
+            src = search_dir / body.file_name
+            if src.is_file():
+                sel_dir = plat_dir / "selected"
+                sel_dir.mkdir(parents=True, exist_ok=True)
+                dst = sel_dir / body.file_name
+                if not dst.exists():
+                    shutil.copy2(src, dst)
+                break
+
+    return {"status": "promoted", "file_name": body.file_name}
 
 
 # --- Helpers ---
@@ -252,6 +391,35 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _load_vlm_video_details(vlm_dir: str | None) -> list[dict[str, Any]]:
+    """Load per-video VLM JSON files from the vlm/ directory."""
+    if not vlm_dir:
+        return []
+    d = Path(vlm_dir)
+    if not d.is_dir():
+        return []
+    results = []
+    for f in sorted(d.iterdir()):
+        if f.suffix != ".json" or f.name.startswith("vlm_summary"):
+            continue
+        try:
+            payload = json.loads(f.read_text(encoding="utf-8"))
+            model_output = payload.get("model_output") or {}
+            scores = model_output.get("scores") or {}
+            results.append({
+                "file_name": payload.get("file_name", f.stem),
+                "auto_decision": payload.get("auto_decision"),
+                "summary": model_output.get("summary", ""),
+                "scores": scores,
+                "confidence": model_output.get("confidence", 0),
+                "reasons": payload.get("reasons") or model_output.get("reasons", []),
+                "decision": model_output.get("decision"),
+            })
+        except (json.JSONDecodeError, OSError):
+            continue
+    return results
+
+
 async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Enrich a pipeline run manifest with video lists and sub-report data."""
     # Ensure this run exists in DB (pipeline runner only writes filesystem)
@@ -311,6 +479,17 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                     }
                     for c in report.get("top_candidates", [])
                 ],
+                "rejected_candidates": [
+                    {
+                        "file_name": c.get("file_name"),
+                        "platform": c.get("platform"),
+                        "views": c.get("views"),
+                        "metrics": c.get("metrics"),
+                        "scores": c.get("scores"),
+                        "reject_reasons": c.get("reject_reasons"),
+                    }
+                    for c in report.get("rejected_candidates", [])
+                ],
             }
 
         # VLM summary
@@ -332,6 +511,14 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                     for v in vlm.get("accepted_top", [])
                 ],
             }
+
+        # VLM per-video details (accepted + rejected with scores)
+        vlm_dir_path = str(plat_dir / "vlm") if plat_dir else None
+        plat["vlm_video_details"] = _load_vlm_video_details(vlm_dir_path)
+
+        # Rejected videos (VLM-rejected)
+        rejected_dir = str(plat_dir / "rejected") if plat_dir else None
+        plat["rejected_videos"] = _list_videos(rejected_dir, data_dir)
 
         # Platform manifest (ingested items with URLs, captions, views)
         pm_path = str(plat_dir / "platform_manifest.json") if plat_dir else None
@@ -586,3 +773,128 @@ async def _update_pipeline_run_status(
             )
     except Exception:
         logger.debug("Failed to update pipeline run %s status to %s", run_id, status, exc_info=True)
+
+
+async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict:
+    store = get_store()
+    influencer = store.load_influencer(body.influencer_id)
+    if influencer is None:
+        raise ValueError(f"Influencer '{body.influencer_id}' not found")
+
+    persona_path = store.influencer_dir(body.influencer_id) / "persona.json"
+    if persona_path.exists():
+        persona = PersonaProfile.from_dict(json.loads(persona_path.read_text(encoding="utf-8")))
+    else:
+        persona = PersonaProfile(
+            persona_id=body.influencer_id,
+            name=influencer.name,
+            summary=influencer.description or "",
+        )
+
+    # Override persona description if provided in the request
+    if body.custom_persona_description is not None:
+        persona.summary = body.custom_persona_description
+
+    video_requirements = (
+        body.custom_video_requirements
+        if body.custom_video_requirements is not None
+        else influencer.video_suggestions_requirement
+    )
+
+    thresholds = body.thresholds
+    base_dir = run.get("base_dir", "")
+
+    for plat in run.get("platforms", []):
+        platform_name = plat.get("platform", "")
+        plat_dir = Path(base_dir) / platform_name
+        filtered_dir = plat_dir / "filtered"
+        vlm_dir = plat_dir / "vlm"
+        selected_dir = plat_dir / "selected"
+        rejected_dir = plat_dir / "rejected"
+
+        if not filtered_dir.is_dir():
+            continue
+
+        if progress_fn:
+            progress_fn({"stage": "vlm", "platform": platform_name, "status": "running"})
+
+        th = SelectorThresholds()
+        if thresholds:
+            th = SelectorThresholds(
+                min_readiness=thresholds.min_readiness,
+                min_confidence=thresholds.min_confidence,
+                min_persona_fit=thresholds.min_persona_fit,
+                max_occlusion_risk=thresholds.max_occlusion_risk,
+                max_scene_cut_complexity=thresholds.max_scene_cut_complexity,
+            )
+
+        await asyncio.to_thread(
+            run_selector,
+            SelectorRunConfig(
+                input_dir=filtered_dir,
+                output_dir=vlm_dir,
+                selected_dir=selected_dir,
+                rejected_dir=rejected_dir,
+                theme=body.theme,
+                hashtags=influencer.hashtags or [],
+                model=body.model,
+                api_key_env="GEMINI_API_KEY",
+                timeout_sec=300,
+                mock=False,
+                max_videos=body.max_videos,
+                sync_folders=True,
+                thresholds=th,
+                persona=persona,
+                video_suggestions_requirement=video_requirements,
+            ),
+        )
+
+        if progress_fn:
+            progress_fn({"stage": "vlm", "platform": platform_name, "status": "completed"})
+
+    # Invalidate existing review (VLM results changed)
+    run_id = run.get("run_id", "")
+    try:
+        db = get_db()
+        existing_review = await db.fetchone("SELECT id FROM reviews WHERE run_id = ?", [run_id])
+        if existing_review:
+            await db.execute("DELETE FROM review_videos WHERE review_id = ?", [existing_review["id"]])
+            await db.execute("DELETE FROM reviews WHERE id = ?", [existing_review["id"]])
+    except Exception:
+        logger.debug("Failed to invalidate review for run %s", run_id, exc_info=True)
+
+    return {"status": "completed", "run_id": run_id}
+
+
+async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -> dict:
+    base_dir = run.get("base_dir", "")
+
+    for plat in run.get("platforms", []):
+        platform_name = plat.get("platform", "")
+        plat_dir = Path(base_dir) / platform_name
+        download_dir = plat_dir / "downloads"
+        analysis_dir = plat_dir / "analysis"
+        filtered_dir = plat_dir / "filtered"
+
+        if not download_dir.is_dir():
+            continue
+
+        if progress_fn:
+            progress_fn({"stage": "filter", "platform": platform_name, "status": "running"})
+
+        await asyncio.to_thread(
+            run_candidate_filter,
+            CandidateFilterConfig(
+                download_dir=download_dir,
+                report_dir=analysis_dir,
+                filtered_dir=filtered_dir,
+                probe_seconds=body.probe_seconds,
+                top_k=body.top_k,
+                sync_filtered=True,
+            ),
+        )
+
+        if progress_fn:
+            progress_fn({"stage": "filter", "platform": platform_name, "status": "completed"})
+
+    return {"status": "completed", "run_id": run.get("run_id", "")}

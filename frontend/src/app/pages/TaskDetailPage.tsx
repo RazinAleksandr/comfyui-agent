@@ -4,11 +4,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
 import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobSSE, useConnectionStatus } from "../api/hooks";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { api } from "../api/client";
-import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo } from "../api/types";
+import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo, VlmVideoDetail, FilterRejectedCandidate, InfluencerOut } from "../api/types";
 import {
   ArrowLeft,
   Download,
@@ -39,6 +42,9 @@ import {
   Server,
   SkipForward,
   Power,
+  RotateCcw,
+  ArrowUpCircle,
+  Pencil,
 } from "lucide-react";
 import { Progress } from "../components/ui/progress";
 import { Separator } from "../components/ui/separator";
@@ -234,7 +240,7 @@ function VideoCard({ video, stageKey, onPlay }: { video: VideoPreview; stageKey:
       <div className="p-2">
         <p className="text-white text-xs truncate leading-tight">{video.title}</p>
         {stageKey === "review" && video.approved && video.prompt && (
-          <p className="text-slate-400 text-xs truncate mt-0.5 italic">"{video.prompt}"</p>
+          <p className="text-slate-400 text-xs line-clamp-3 mt-0.5 italic leading-snug">"{video.prompt}"</p>
         )}
       </div>
     </div>
@@ -309,13 +315,13 @@ function formatViews(n: number): string {
   return String(n);
 }
 
-function StageDetails({ details }: { details: Record<string, unknown> }) {
+function StageDetails({ details, onPlay }: { details: Record<string, unknown>; onPlay?: (url: string, title: string) => void }) {
   const type = details._type as string | undefined;
 
   if (type === "ingestion") return <IngestionDetails details={details} />;
   if (type === "download") return <DownloadDetails details={details} />;
   if (type === "filter") return <FilterDetails details={details} />;
-  if (type === "vlm") return <VlmDetails details={details} />;
+  if (type === "vlm") return <VlmDetails details={details} onPlay={onPlay} />;
   if (type === "review") return <ReviewSummaryDetails details={details} />;
   if (type === "generation") return <GenerationSummaryDetails details={details} />;
 
@@ -452,6 +458,9 @@ function FilterDetails({ details }: { details: Record<string, unknown> }) {
     file_name: string; resolution: string; duration: string;
     fps: number; quality: number; stability: number; final_score: number;
   }> ?? [];
+  const rejectedCandidates = details.rejected_candidates as FilterRejectedCandidate[] ?? [];
+
+  const [showRejected, setShowRejected] = useState(false);
 
   return (
     <div className="space-y-4 mb-4">
@@ -514,6 +523,43 @@ function FilterDetails({ details }: { details: Record<string, unknown> }) {
           </table>
         </div>
       )}
+
+      {/* Rejected candidates collapsible */}
+      {rejectedCandidates.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowRejected(!showRejected)}
+            className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+          >
+            <ChevronRight className={`w-4 h-4 transition-transform ${showRejected ? "rotate-90" : ""}`} />
+            Show {rejectedCandidates.length} rejected candidates
+          </button>
+          {showRejected && (
+            <div className="space-y-2 mt-3">
+              {rejectedCandidates.map((rc, i) => (
+                <div key={i} className="bg-red-50/50 rounded-lg p-3 border border-red-100">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="secondary" className="font-mono text-xs">{rc.file_name}</Badge>
+                    <Badge variant="outline" className="text-xs">{rc.platform}</Badge>
+                    {rc.metrics && (
+                      <span className="text-xs text-slate-500 font-mono">
+                        {rc.metrics.width}x{rc.metrics.height} / {rc.metrics.duration_sec.toFixed(1)}s
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {rc.reject_reasons.map((reason, j) => (
+                      <Badge key={j} variant="destructive" className="text-xs font-normal">
+                        {reason}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -533,7 +579,99 @@ function ScoreBar({ value, highlight }: { value: number; highlight?: boolean }) 
   );
 }
 
-function VlmDetails({ details }: { details: Record<string, unknown> }) {
+// --- VLM Score bar helpers ---
+
+const VLM_SCORE_ENTRIES: Array<{ key: keyof VlmVideoDetail["scores"]; label: string; inverted: boolean }> = [
+  { key: "theme_match", label: "Theme Match", inverted: false },
+  { key: "persona_fit", label: "Persona Fit", inverted: false },
+  { key: "single_subject_clarity", label: "Subject Clarity", inverted: false },
+  { key: "face_visibility", label: "Face Visibility", inverted: false },
+  { key: "motion_stability", label: "Motion Stability", inverted: false },
+  { key: "occlusion_risk", label: "Occlusion Risk", inverted: true },
+  { key: "scene_cut_complexity", label: "Cut Complexity", inverted: true },
+  { key: "substitution_readiness", label: "Readiness", inverted: false },
+];
+
+function vlmScoreBarColor(value: number, inverted: boolean): string {
+  if (inverted) {
+    if (value <= 4) return "bg-green-500";
+    if (value <= 6) return "bg-yellow-500";
+    return "bg-red-500";
+  }
+  if (value >= 7) return "bg-green-500";
+  if (value >= 5) return "bg-yellow-500";
+  return "bg-red-500";
+}
+
+// Compact card for rejected VLM videos — same width as VideoCard, shows thumbnail + rejection info
+function VlmRejectedCard({ item, thumbnailUrl, onPlay, selected, onToggleSelect }: {
+  item: VlmVideoDetail;
+  thumbnailUrl?: string;
+  onPlay?: (url: string, title: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (fileName: string) => void;
+}) {
+  const readiness = item.scores.substitution_readiness;
+  const hasThumb = !!thumbnailUrl;
+
+  const handleClick = () => {
+    if (onPlay && thumbnailUrl && isVideoUrl(thumbnailUrl)) {
+      onPlay(thumbnailUrl, item.file_name);
+    }
+  };
+
+  return (
+    <div className={`flex-shrink-0 w-40 rounded-xl overflow-hidden bg-slate-900 shadow-sm hover:shadow-md transition-shadow group border ${selected ? "border-blue-400 ring-2 ring-blue-300" : "border-red-300"}`}>
+      {/* Checkbox for selection */}
+      {onToggleSelect && (
+        <div
+          className="absolute top-1.5 left-1.5 z-10"
+          onClick={(e) => { e.stopPropagation(); onToggleSelect(item.file_name); }}
+        >
+          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer ${selected ? "bg-blue-500 border-blue-500" : "bg-white/80 border-slate-400 hover:border-blue-400"}`}>
+            {selected && <CheckCheck className="w-3 h-3 text-white" />}
+          </div>
+        </div>
+      )}
+      <div className="relative w-full cursor-pointer" style={{ aspectRatio: "9/16" }} onClick={handleClick}>
+        {hasThumb ? (
+          <MediaThumb src={thumbnailUrl} alt={item.file_name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+        ) : (
+          <div className="w-full h-full bg-slate-800 flex items-center justify-center">
+            <FileVideo className="w-8 h-8 text-slate-500" />
+          </div>
+        )}
+        {/* Play overlay */}
+        {hasThumb && isVideoUrl(thumbnailUrl!) && (
+          <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+              <Play className="w-4 h-4 text-slate-900 ml-0.5" fill="currentColor" />
+            </div>
+          </div>
+        )}
+        {/* Rejected badge */}
+        <div className="absolute top-1.5 right-1.5 bg-red-600/90 text-white text-xs px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+          <XIcon className="w-2.5 h-2.5" />
+          Rej
+        </div>
+        {/* Readiness score */}
+        {readiness !== undefined && (
+          <div className={`absolute bottom-1.5 right-1.5 ${vlmScoreBarColor(readiness, false)} text-white text-xs px-1.5 py-0.5 rounded font-bold`}>
+            {readiness}/10
+          </div>
+        )}
+      </div>
+      <div className="p-2">
+        <p className="text-white text-xs truncate leading-tight">{item.file_name}</p>
+        {item.reasons.length > 0 && (
+          <p className="text-red-300 text-xs truncate mt-0.5 leading-snug" title={item.reasons[0]}>{item.reasons[0]}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VlmDetails({ details, onPlay }: { details: Record<string, unknown>; onPlay?: (url: string, title: string) => void }) {
   const accepted = details.accepted as number ?? 0;
   const rejected = details.rejected as number ?? 0;
   const model = details.model as string ?? "";
@@ -541,6 +679,10 @@ function VlmDetails({ details }: { details: Record<string, unknown> }) {
     file_name: string; readiness: number; persona_fit: number;
     confidence: number; reasons: string[];
   }> ?? [];
+  const rejectedItems = details.rejected_items as VlmVideoDetail[] ?? [];
+  const rejectedVideoUrls = details.rejected_video_urls as Record<string, string> ?? {};
+
+  const [showRejected, setShowRejected] = useState(false);
 
   return (
     <div className="space-y-4 mb-4">
@@ -589,6 +731,32 @@ function VlmDetails({ details }: { details: Record<string, unknown> }) {
           </ul>
         </div>
       ))}
+
+      {/* Rejected items — horizontal scroll, same style as VideoCard */}
+      {rejectedItems.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowRejected(!showRejected)}
+            className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors mb-3"
+          >
+            <ChevronRight className={`w-4 h-4 transition-transform ${showRejected ? "rotate-90" : ""}`} />
+            Show {rejectedItems.length} rejected videos
+          </button>
+          {showRejected && (
+            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
+              {rejectedItems.map((item) => (
+                <div key={item.file_name} className="relative">
+                  <VlmRejectedCard
+                    item={item}
+                    thumbnailUrl={rejectedVideoUrls[item.file_name]}
+                    onPlay={onPlay}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -696,6 +864,250 @@ function StageVideoPreview({ videos, stageKey, totalCount, onPlay }: { videos: V
   );
 }
 
+// --- Re-run Dialogs ---
+
+function RerunVlmDialog({ open, onClose, influencerId, runId, onJobStarted, influencer }: {
+  open: boolean;
+  onClose: () => void;
+  influencerId: string;
+  runId: string;
+  onJobStarted: (jobId: string) => void;
+  influencer?: InfluencerOut | null;
+}) {
+  const [theme, setTheme] = useState("influencer channel");
+  const [model, setModel] = useState("gemini-2.5-flash");
+  const [maxVideos, setMaxVideos] = useState(30);
+  const [minReadiness, setMinReadiness] = useState(7.0);
+  const [minConfidence, setMinConfidence] = useState(0.70);
+  const [minPersonaFit, setMinPersonaFit] = useState(6.5);
+  const [maxOcclusionRisk, setMaxOcclusionRisk] = useState(6.0);
+  const [maxSceneCutComplexity, setMaxSceneCutComplexity] = useState(6.0);
+  const [personaDescription, setPersonaDescription] = useState("");
+  const [videoRequirements, setVideoRequirements] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Pre-fill from influencer when dialog opens
+  useEffect(() => {
+    if (open && influencer) {
+      setPersonaDescription(influencer.description ?? "");
+      setVideoRequirements(influencer.video_suggestions_requirement ?? "");
+    }
+  }, [open, influencer]);
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { job_id } = await api.rerunVlm(runId, {
+        influencer_id: influencerId,
+        theme,
+        model,
+        max_videos: maxVideos,
+        thresholds: {
+          min_readiness: minReadiness,
+          min_confidence: minConfidence,
+          min_persona_fit: minPersonaFit,
+          max_occlusion_risk: maxOcclusionRisk,
+          max_scene_cut_complexity: maxSceneCutComplexity,
+        },
+        custom_persona_description: personaDescription || null,
+        custom_video_requirements: videoRequirements || null,
+      });
+      onJobStarted(job_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Re-run VLM Scoring</DialogTitle>
+          <DialogDescription>
+            Re-score filtered videos with Gemini AI. Edit the prompt or adjust thresholds.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          {/* Prompt editing */}
+          <div className="space-y-2">
+            <Label htmlFor="vlm-persona-desc" className="text-sm font-medium">
+              Persona Description
+              <span className="ml-1 text-xs text-slate-400 font-normal">(Gemini uses this to evaluate persona fit)</span>
+            </Label>
+            <Textarea
+              id="vlm-persona-desc"
+              value={personaDescription}
+              onChange={(e) => setPersonaDescription(e.target.value)}
+              placeholder="Describe the influencer's persona, style, and target audience..."
+              rows={3}
+              className="text-sm"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="vlm-video-req" className="text-sm font-medium">
+              Video Requirements
+              <span className="ml-1 text-xs text-slate-400 font-normal">(Additional rejection criteria for Gemini)</span>
+            </Label>
+            <Textarea
+              id="vlm-video-req"
+              value={videoRequirements}
+              onChange={(e) => setVideoRequirements(e.target.value)}
+              placeholder="Describe what makes a video unsuitable (e.g. avoid busy backgrounds, multiple people, etc.)..."
+              rows={3}
+              className="text-sm"
+            />
+          </div>
+
+          <Separator />
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="vlm-theme">Theme</Label>
+              <Input id="vlm-theme" value={theme} onChange={(e) => setTheme(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="vlm-model">Model</Label>
+              <Input id="vlm-model" value={model} onChange={(e) => setModel(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="vlm-max-videos">Max Videos</Label>
+              <Input id="vlm-max-videos" type="number" value={maxVideos} onChange={(e) => setMaxVideos(Number(e.target.value))} min={1} max={200} />
+            </div>
+          </div>
+
+          <Separator />
+          <p className="text-sm font-medium text-slate-700">Thresholds</p>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="vlm-min-readiness" className="text-xs">Min Readiness</Label>
+              <Input id="vlm-min-readiness" type="number" value={minReadiness} onChange={(e) => setMinReadiness(Number(e.target.value))} step={0.5} min={0} max={10} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vlm-min-confidence" className="text-xs">Min Confidence</Label>
+              <Input id="vlm-min-confidence" type="number" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))} step={0.05} min={0} max={1} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vlm-min-persona-fit" className="text-xs">Min Persona Fit</Label>
+              <Input id="vlm-min-persona-fit" type="number" value={minPersonaFit} onChange={(e) => setMinPersonaFit(Number(e.target.value))} step={0.5} min={0} max={10} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vlm-max-occlusion" className="text-xs">Max Occlusion Risk</Label>
+              <Input id="vlm-max-occlusion" type="number" value={maxOcclusionRisk} onChange={(e) => setMaxOcclusionRisk(Number(e.target.value))} step={0.5} min={0} max={10} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vlm-max-scene-cut" className="text-xs">Max Scene Cut Complexity</Label>
+              <Input id="vlm-max-scene-cut" type="number" value={maxSceneCutComplexity} onChange={(e) => setMaxSceneCutComplexity(Number(e.target.value))} step={0.5} min={0} max={10} />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-amber-700 text-xs bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            This will invalidate existing review decisions
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4" />
+              {error}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={submitting} className="gap-2">
+            {submitting ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Re-scoring...</>
+            ) : (
+              <><RotateCcw className="w-4 h-4" /> Re-run VLM</>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RerunFilterDialog({ open, onClose, influencerId, runId, onJobStarted }: {
+  open: boolean;
+  onClose: () => void;
+  influencerId: string;
+  runId: string;
+  onJobStarted: (jobId: string) => void;
+}) {
+  const [topK, setTopK] = useState(15);
+  const [probeSeconds, setProbeSeconds] = useState(8);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { job_id } = await api.rerunFilter(runId, {
+        influencer_id: influencerId,
+        top_k: topK,
+        probe_seconds: probeSeconds,
+      });
+      onJobStarted(job_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Re-run Filter</DialogTitle>
+          <DialogDescription>
+            Re-filter downloaded videos with updated parameters.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label htmlFor="filter-top-k">Top K</Label>
+            <Input id="filter-top-k" type="number" value={topK} onChange={(e) => setTopK(Number(e.target.value))} min={1} max={200} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="filter-probe-seconds">Probe Seconds</Label>
+            <Input id="filter-probe-seconds" type="number" value={probeSeconds} onChange={(e) => setProbeSeconds(Number(e.target.value))} min={3} max={120} />
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4" />
+              {error}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={submitting} className="gap-2">
+            {submitting ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Re-filtering...</>
+            ) : (
+              <><RotateCcw className="w-4 h-4" /> Re-run Filter</>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// (PromotableRejectedCard replaced by checkbox selection inside ReviewPanel)
+
 // --- Review Panel: interactive review UI for Stage 5 ---
 
 interface ReviewItem {
@@ -716,6 +1128,9 @@ function ReviewPanel({
   runId,
   onComplete,
   onPlay,
+  vlmRejectedItems,
+  rejectedVideoUrls,
+  initialReview,
 }: {
   vlmVideos: VideoPreview[];
   vlmAccepted: VlmAccepted[];
@@ -723,35 +1138,71 @@ function ReviewPanel({
   runId: string;
   onComplete: () => void;
   onPlay?: (url: string, title: string) => void;
+  vlmRejectedItems?: VlmVideoDetail[];
+  rejectedVideoUrls?: Record<string, string>;
+  initialReview?: ReviewVideo[];
 }) {
   const buildItems = useCallback((): ReviewItem[] =>
     vlmVideos.map((v) => {
       const vlm = vlmAccepted.find((a) => a.file_name === v.id);
+      const existing = initialReview?.find((r) => r.file_name === v.id);
       return {
         file_name: v.id,
         thumbnail: v.thumbnail,
-        approved: true,
-        prompt: "",
+        approved: existing?.approved ?? true,
+        prompt: existing?.prompt ?? "",
         readiness: vlm?.readiness,
         persona_fit: vlm?.persona_fit,
         confidence: vlm?.confidence,
         reasons: vlm?.reasons,
       };
-    }), [vlmVideos, vlmAccepted]);
+    }), [vlmVideos, vlmAccepted, initialReview]);
 
   const [items, setItems] = useState<ReviewItem[]>(buildItems);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedRejected, setSelectedRejected] = useState<Set<string>>(new Set());
+
+  const toggleRejectedSelection = (fileName: string) => {
+    setSelectedRejected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fileName)) next.delete(fileName);
+      else next.add(fileName);
+      return next;
+    });
+  };
+
+  const addSelectedToReview = () => {
+    if (!vlmRejectedItems) return;
+    const toAdd = vlmRejectedItems.filter((item) => selectedRejected.has(item.file_name));
+    const newItems: ReviewItem[] = toAdd.map((item) => ({
+      file_name: item.file_name,
+      thumbnail: rejectedVideoUrls?.[item.file_name] ?? "",
+      approved: true,
+      prompt: "",
+      readiness: item.scores.substitution_readiness,
+      persona_fit: item.scores.persona_fit,
+      confidence: item.confidence,
+      reasons: item.reasons,
+    }));
+    setItems((prev) => {
+      // Avoid duplicates
+      const existingNames = new Set(prev.map((it) => it.file_name));
+      return [...prev, ...newItems.filter((n) => !existingNames.has(n.file_name))];
+    });
+    setSelectedRejected(new Set());
+  };
 
   // BUG-003: Re-sync items when VLM data changes (e.g., after refetch)
   useEffect(() => {
     setItems((prev) => {
       const next = buildItems();
-      // Preserve user edits (prompt, approved) for items that still exist
+      // Preserve user edits for items that still exist, but prefer initialReview prompts
+      // over stale empty strings (avoids overwriting Gemini captions when rawRun loads async)
       return next.map((n) => {
         const existing = prev.find((p) => p.file_name === n.file_name);
         if (existing) {
-          return { ...n, approved: existing.approved, prompt: existing.prompt };
+          return { ...n, approved: existing.approved, prompt: existing.prompt || n.prompt };
         }
         return n;
       });
@@ -787,6 +1238,7 @@ function ReviewPanel({
   const approvedCount = items.filter((it) => it.approved).length;
   const approvedWithoutPrompt = items.filter((it) => it.approved && !it.prompt.trim()).length;
   const canSubmit = approvedCount > 0 && approvedWithoutPrompt === 0 && !submitting;
+  const [showRejectedInReview, setShowRejectedInReview] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -919,6 +1371,46 @@ function ReviewPanel({
           )}
         </Button>
       </div>
+
+      {/* Rejected VLM videos — checkbox selection to add to review */}
+      {vlmRejectedItems && vlmRejectedItems.length > 0 && (
+        <div className="mt-6 pt-6 border-t border-slate-200">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={() => setShowRejectedInReview(!showRejectedInReview)}
+              className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+            >
+              <ChevronRight className={`w-4 h-4 transition-transform ${showRejectedInReview ? "rotate-90" : ""}`} />
+              Gemini Rejected ({vlmRejectedItems.length}) — select to add to review
+            </button>
+            {showRejectedInReview && selectedRejected.size > 0 && (
+              <Button
+                size="sm"
+                className="gap-1.5 bg-blue-600 hover:bg-blue-700"
+                onClick={addSelectedToReview}
+              >
+                <ArrowUpCircle className="w-3.5 h-3.5" />
+                Add {selectedRejected.size} to Review
+              </Button>
+            )}
+          </div>
+          {showRejectedInReview && (
+            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
+              {vlmRejectedItems.filter((item) => !items.some((it) => it.file_name === item.file_name)).map((item) => (
+                <div key={item.file_name} className="relative flex-shrink-0">
+                  <VlmRejectedCard
+                    item={item}
+                    thumbnailUrl={rejectedVideoUrls?.[item.file_name]}
+                    onPlay={onPlay}
+                    selected={selectedRejected.has(item.file_name)}
+                    onToggleSelect={toggleRejectedSelection}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1350,10 +1842,24 @@ export default function TaskDetailPage() {
   }, [refetchTask, refetchRaw]);
 
   const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+  const [showVlmRerunDialog, setShowVlmRerunDialog] = useState(false);
+  const [showFilterRerunDialog, setShowFilterRerunDialog] = useState(false);
+  const [rerunJobId, setRerunJobId] = useState<string | null>(null);
+  const [editingReview, setEditingReview] = useState(false);
 
   const handlePlayVideo = useCallback((url: string, title: string) => {
     setPlayingVideo({ url, title });
   }, []);
+
+  // Track re-run job progress
+  const rerunJob = useJobSSE(rerunJobId);
+  useEffect(() => {
+    if (rerunJob.isComplete) {
+      setRerunJobId(null);
+      refetchTask();
+      refetchRaw();
+    }
+  }, [rerunJob.isComplete, refetchTask, refetchRaw]);
 
   if (loadingTask || loadingInf) {
     return (
@@ -1500,7 +2006,45 @@ export default function TaskDetailPage() {
                           </CardDescription>
                         </div>
                       </div>
-                      {getStatusIcon(stage.status, "w-6 h-6")}
+                      <div className="flex items-center gap-2">
+                        {/* Re-run buttons */}
+                        {key === "vlm_scoring" && stage.status === "completed" && !rerunJobId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 text-xs"
+                            onClick={() => setShowVlmRerunDialog(true)}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Re-score
+                          </Button>
+                        )}
+                        {key === "candidate_filter" && stage.status === "completed" && !rerunJobId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 text-xs"
+                            onClick={() => setShowFilterRerunDialog(true)}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Re-filter
+                          </Button>
+                        )}
+                        {/* Re-run progress indicator */}
+                        {rerunJobId && (key === "vlm_scoring" || key === "candidate_filter") && (
+                          <div className="flex items-center gap-1.5 text-xs text-blue-600">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Re-running...
+                          </div>
+                        )}
+                        {key === "review" && stage.status === "completed" && task.stages.vlm_scoring.status === "completed" && !editingReview && (
+                          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setEditingReview(true)}>
+                            <Pencil className="w-3.5 h-3.5" />
+                            Edit Review
+                          </Button>
+                        )}
+                        {getStatusIcon(stage.status, "w-6 h-6")}
+                      </div>
                     </div>
                   </CardHeader>
 
@@ -1533,7 +2077,7 @@ export default function TaskDetailPage() {
                         </div>
 
                         {stage.details && (
-                          <StageDetails details={stage.details} />
+                          <StageDetails details={stage.details} onPlay={handlePlayVideo} />
                         )}
 
                         {stage.videos && stage.videos.length > 0 && (
@@ -1543,6 +2087,25 @@ export default function TaskDetailPage() {
                             totalCount={stage.items_count}
                             onPlay={handlePlayVideo}
                           />
+                        )}
+                        {key === "review" && stage.status === "completed" && stage.videos && stage.videos.filter(v => v.approved).length > 0 && (
+                          <div className="mt-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Pencil className="w-4 h-4 text-slate-500" />
+                              <span className="text-sm font-medium text-slate-700">Generation Prompts</span>
+                            </div>
+                            <div className="space-y-1.5">
+                              {stage.videos.filter(v => v.approved).map(v => (
+                                <div key={v.id} className="flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2 border border-slate-100">
+                                  <span className="text-xs font-mono text-slate-400 w-44 flex-shrink-0 truncate pt-0.5">{v.title}</span>
+                                  {v.prompt
+                                    ? <span className="text-sm text-slate-700 italic flex-1">"{v.prompt}"</span>
+                                    : <span className="text-sm text-amber-500 flex-1">No prompt</span>
+                                  }
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         )}
                       </>
                     )}
@@ -1556,7 +2119,30 @@ export default function TaskDetailPage() {
                         runId={runId!}
                         onComplete={refetchAll}
                         onPlay={handlePlayVideo}
+                        vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
+                        rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
                       />
+                    )}
+
+                    {/* Edit Review: allow re-editing a completed review (e.g. to fix auto-generated captions) */}
+                    {key === "review" && stage.status === "completed" && task.stages.vlm_scoring.status === "completed" && editingReview && (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-sm font-medium text-slate-700">Editing review — changes will overwrite the current review</p>
+                          <Button variant="outline" size="sm" onClick={() => setEditingReview(false)}>Cancel</Button>
+                        </div>
+                        <ReviewPanel
+                          vlmVideos={task.stages.vlm_scoring.videos ?? []}
+                          vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
+                          influencerId={avatarId!}
+                          runId={runId!}
+                          onComplete={() => { setEditingReview(false); refetchAll(); }}
+                          onPlay={handlePlayVideo}
+                          vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
+                          rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
+                          initialReview={rawRun?.review?.videos}
+                        />
+                      </div>
                     )}
 
                     {/* Generation panel: show controls when review is completed */}
@@ -1618,6 +2204,22 @@ export default function TaskDetailPage() {
           onClose={() => setPlayingVideo(null)}
         />
       )}
+
+      <RerunVlmDialog
+        open={showVlmRerunDialog}
+        onClose={() => setShowVlmRerunDialog(false)}
+        influencerId={avatarId!}
+        runId={runId!}
+        onJobStarted={(id) => { setRerunJobId(id); setShowVlmRerunDialog(false); }}
+        influencer={influencer}
+      />
+      <RerunFilterDialog
+        open={showFilterRerunDialog}
+        onClose={() => setShowFilterRerunDialog(false)}
+        influencerId={avatarId!}
+        runId={runId!}
+        onJobStarted={(id) => { setRerunJobId(id); setShowFilterRerunDialog(false); }}
+      />
     </div>
   );
 }
