@@ -1480,6 +1480,181 @@ function GenerationJobProgress({ jobId }: { jobId: string }) {
   );
 }
 
+function ReviewCompletedList({
+  videos,
+  vlmAccepted,
+  editing,
+  initialReview,
+  influencerId,
+  runId,
+  onComplete,
+  onCancel,
+  onPlay,
+}: {
+  videos: VideoPreview[];
+  vlmAccepted: VlmAccepted[];
+  editing: boolean;
+  initialReview?: ReviewVideo[];
+  influencerId: string;
+  runId: string;
+  onComplete: () => void;
+  onCancel: () => void;
+  onPlay?: (url: string, title: string) => void;
+}) {
+  const [items, setItems] = useState(() =>
+    videos.map(v => ({
+      file_name: v.id,
+      thumbnail: v.thumbnail,
+      approved: v.approved ?? true,
+      prompt: v.prompt ?? "",
+    }))
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialReview && initialReview.length > 0) {
+      setItems(prev => prev.map(item => {
+        const r = initialReview.find(rv => rv.file_name === item.file_name);
+        if (r) return { ...item, approved: r.approved, prompt: r.prompt || item.prompt };
+        return item;
+      }));
+    }
+  }, [initialReview]);
+
+  const submit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitReview(influencerId, runId,
+        items.map(it => ({ file_name: it.file_name, approved: it.approved, prompt: it.prompt }))
+      );
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const approvedWithoutPrompt = items.filter(it => it.approved && !it.prompt.trim()).length;
+
+  return (
+    <div className="mt-3">
+      {editing && (
+        <div className="flex items-center justify-between mb-4 px-1">
+          <p className="text-sm font-medium text-slate-700">Editing review — changes will overwrite the current review</p>
+          <div className="flex items-center gap-2">
+            {error && <span className="text-xs text-red-600">{error}</span>}
+            {approvedWithoutPrompt > 0 && (
+              <span className="text-xs text-amber-600">{approvedWithoutPrompt} need prompt</span>
+            )}
+            <Button variant="outline" size="sm" onClick={onCancel} disabled={submitting}>Cancel</Button>
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={approvedWithoutPrompt > 0 || submitting}
+              className="gap-1.5 bg-green-600 hover:bg-green-700 text-white"
+            >
+              {submitting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...</> : "Save Review"}
+            </Button>
+          </div>
+        </div>
+      )}
+      <div className="space-y-3">
+        {items.map((item, idx) => {
+          const vlm = vlmAccepted.find(a => a.file_name === item.file_name);
+          return (
+            <div
+              key={item.file_name}
+              className={`flex gap-4 rounded-xl border p-3 bg-white ${editing ? "border-blue-200" : "border-slate-200"}`}
+            >
+              {/* Thumbnail */}
+              <div
+                className="w-28 flex-shrink-0 rounded-lg overflow-hidden cursor-pointer bg-slate-900 group relative"
+                style={{ aspectRatio: "9/16" }}
+                onClick={() => item.thumbnail && isVideoUrl(item.thumbnail) && onPlay?.(item.thumbnail, item.file_name)}
+              >
+                <MediaThumb src={item.thumbnail} alt={item.file_name} className="w-full h-full object-cover" />
+                <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+                    <Play className="w-3.5 h-3.5 text-slate-900 ml-0.5" fill="currentColor" />
+                  </div>
+                </div>
+              </div>
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-900 truncate">{item.file_name}</p>
+                {vlm && (
+                  <div className="flex gap-4 text-xs mt-1 text-slate-500">
+                    <span>Readiness: <span className="text-green-600 font-semibold">{vlm.readiness}/10</span></span>
+                    <span>Persona Fit: <span className="text-blue-600 font-semibold">{vlm.persona_fit}/10</span></span>
+                    <span>Confidence: <span className="text-purple-600 font-semibold">{Math.round((vlm.confidence ?? 0) * 100)}%</span></span>
+                  </div>
+                )}
+                {vlm?.reasons && vlm.reasons.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {vlm.reasons.slice(0, 5).map((r, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-xs text-slate-600">
+                        <CheckCircle2 className="w-3 h-3 text-green-500 flex-shrink-0 mt-0.5" />
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {/* Prompt */}
+                <div className="mt-2">
+                  {editing ? (
+                    <div>
+                      <input
+                        type="text"
+                        placeholder="Enter generation prompt for this video..."
+                        value={item.prompt}
+                        onChange={e => setItems(prev => prev.map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it))}
+                        className={`w-full px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                          !item.prompt.trim() && item.approved ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
+                        }`}
+                      />
+                      {!item.prompt.trim() && item.approved && (
+                        <p className="text-xs text-amber-600 mt-0.5">Prompt is required for approved videos</p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className={`px-3 py-1.5 rounded-md text-sm border ${item.prompt ? "bg-slate-50 border-slate-100 text-slate-700 italic" : "border-transparent text-amber-500"}`}>
+                      {item.prompt ? `"${item.prompt}"` : "No prompt"}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {/* Approved status / toggle */}
+              <div className="flex-shrink-0 flex items-start pt-0.5">
+                {editing ? (
+                  <button
+                    onClick={() => setItems(prev => prev.map((it, i) => i === idx ? { ...it, approved: !it.approved } : it))}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      item.approved ? "bg-green-600 hover:bg-green-700 text-white" : "bg-slate-200 hover:bg-slate-300 text-slate-600"
+                    }`}
+                  >
+                    {item.approved ? <CheckCheck className="w-4 h-4" /> : <XIcon className="w-4 h-4" />}
+                    {item.approved ? "Approved" : "Skipped"}
+                  </button>
+                ) : (
+                  <div className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold ${
+                    item.approved ? "bg-green-600 text-white" : "bg-slate-200 text-slate-600"
+                  }`}>
+                    {item.approved ? <CheckCheck className="w-4 h-4" /> : <XIcon className="w-4 h-4" />}
+                    {item.approved ? "Approved" : "Skipped"}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function GenerationPanel({
   reviewVideos,
   influencerId,
@@ -2080,32 +2255,13 @@ export default function TaskDetailPage() {
                           <StageDetails details={stage.details} onPlay={handlePlayVideo} />
                         )}
 
-                        {stage.videos && stage.videos.length > 0 && (
+                        {stage.videos && stage.videos.length > 0 && key !== "review" && (
                           <StageVideoPreview
                             videos={stage.videos}
                             stageKey={key}
                             totalCount={stage.items_count}
                             onPlay={handlePlayVideo}
                           />
-                        )}
-                        {key === "review" && stage.status === "completed" && stage.videos && stage.videos.filter(v => v.approved).length > 0 && (
-                          <div className="mt-4">
-                            <div className="flex items-center gap-2 mb-2">
-                              <Pencil className="w-4 h-4 text-slate-500" />
-                              <span className="text-sm font-medium text-slate-700">Generation Prompts</span>
-                            </div>
-                            <div className="space-y-1.5">
-                              {stage.videos.filter(v => v.approved).map(v => (
-                                <div key={v.id} className="flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2 border border-slate-100">
-                                  <span className="text-xs font-mono text-slate-400 w-44 flex-shrink-0 truncate pt-0.5">{v.title}</span>
-                                  {v.prompt
-                                    ? <span className="text-sm text-slate-700 italic flex-1">"{v.prompt}"</span>
-                                    : <span className="text-sm text-amber-500 flex-1">No prompt</span>
-                                  }
-                                </div>
-                              ))}
-                            </div>
-                          </div>
                         )}
                       </>
                     )}
@@ -2124,25 +2280,19 @@ export default function TaskDetailPage() {
                       />
                     )}
 
-                    {/* Edit Review: allow re-editing a completed review (e.g. to fix auto-generated captions) */}
-                    {key === "review" && stage.status === "completed" && task.stages.vlm_scoring.status === "completed" && editingReview && (
-                      <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <p className="text-sm font-medium text-slate-700">Editing review — changes will overwrite the current review</p>
-                          <Button variant="outline" size="sm" onClick={() => setEditingReview(false)}>Cancel</Button>
-                        </div>
-                        <ReviewPanel
-                          vlmVideos={task.stages.vlm_scoring.videos ?? []}
-                          vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
-                          influencerId={avatarId!}
-                          runId={runId!}
-                          onComplete={() => { setEditingReview(false); refetchAll(); }}
-                          onPlay={handlePlayVideo}
-                          vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
-                          rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
-                          initialReview={rawRun?.review?.videos}
-                        />
-                      </div>
+                    {/* Completed review: video list with prompts (read-only or editable inline) */}
+                    {key === "review" && stage.status === "completed" && stage.videos && stage.videos.length > 0 && (
+                      <ReviewCompletedList
+                        videos={stage.videos}
+                        vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
+                        editing={editingReview}
+                        initialReview={rawRun?.review?.videos}
+                        influencerId={avatarId!}
+                        runId={runId!}
+                        onComplete={() => { setEditingReview(false); refetchAll(); }}
+                        onCancel={() => setEditingReview(false)}
+                        onPlay={handlePlayVideo}
+                      />
                     )}
 
                     {/* Generation panel: show controls when review is completed */}
