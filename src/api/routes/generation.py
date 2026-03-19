@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -467,14 +468,26 @@ async def _do_generation(
             from comfy_pipeline.config import WorkflowConfig
             wf_config = WorkflowConfig.from_yaml(PROJECT_ROOT / "configs" / f"{workflow}.yaml")
             char_args = wf_config.character_set_args(influencer_id)
-            for arg in char_args:
-                k, _, v = arg.partition("=")
-                if k and v:
-                    overrides[k] = v
             if char_args:
+                for arg in char_args:
+                    k, _, v = arg.partition("=")
+                    if k and v:
+                        overrides[k] = v
                 logger.info("Auto-applied LoRAs for %s: %s", influencer_id, char_args)
+            else:
+                # Unknown character — disable personal LoRAs to avoid
+                # using hardcoded defaults from the workflow file
+                overrides.setdefault("lora_high_strength", "0")
+                overrides.setdefault("lora_low_strength", "0")
+                logger.info("No LoRA config for %s, setting strengths to 0", influencer_id)
         except Exception:
             pass  # no character config — generate without LoRAs
+
+    # Inject random seeds for KSampler nodes — ensures unique results per run.
+    # seed_main (324) = main generation, seed_face (480) = face refine, seed_skin (494) = skin refine.
+    for seed_key in ("seed_main", "seed_face", "seed_skin"):
+        if seed_key not in overrides:
+            overrides[seed_key] = str(random.randint(0, 2**32 - 1))
 
     def _run_locked():
         """Acquire per-server lock so only one generation runs at a time on each GPU."""

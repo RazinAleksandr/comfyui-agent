@@ -1,6 +1,6 @@
 name: wan_animate
 description: "Wan 2.2 Animate - Character animation from reference image and video"
-workflow_file: workflows/Wan_Animate_workflow.json
+workflow_file: workflows/Wan_Animate_workflow_api.json
 max_video_seconds: 8  # trim reference videos longer than this
 
 comfyui:
@@ -151,6 +151,16 @@ parameters:
   lora_low_strength:
     node_id: "464"
     param: strength_model
+  # KSampler seeds (randomized per run to match ComfyUI UI behavior)
+  seed_main:
+    node_id: "324"
+    param: seed
+  seed_face:
+    node_id: "480"
+    param: seed
+  seed_skin:
+    node_id: "494"
+    param: seed
   # Built-in LoRAs
   i2v_distill_strength:
     node_id: "314"
