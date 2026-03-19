@@ -363,6 +363,25 @@ async def start_generation(body: GenerationRequest) -> dict:
     if not output_dir:
         output_dir = str(PROJECT_ROOT / "output")
 
+    # Check for active generation for this video before submitting
+    if body.reference_video:
+        video_p = Path(body.reference_video)
+        run_id = _resolve_run_id(video_p)
+        if run_id:
+            db = get_db()
+            existing = await db.fetchone(
+                "SELECT gj.job_id FROM generation_jobs gj "
+                "JOIN jobs j ON j.job_id = gj.job_id "
+                "WHERE gj.run_id = ? AND gj.file_name = ? AND j.status IN ('pending', 'running')",
+                [run_id, video_p.name],
+            )
+            if existing:
+                logger.info(
+                    "Active generation already running for %s (job %s), returning existing",
+                    video_p.name, existing["job_id"],
+                )
+                return {"job_id": existing["job_id"], "server_id": server_id}
+
     jm = get_job_manager()
     job_id = jm.submit_tagged(
         _do_generation,
@@ -377,7 +396,7 @@ async def start_generation(body: GenerationRequest) -> dict:
         server_id=server_id,
     )
 
-    # Persist job to generation_jobs table (DB-backed, atomic, no race condition)
+    # Persist job to generation_jobs table
     if body.reference_video:
         try:
             await _save_generation_job(

@@ -45,6 +45,7 @@ import {
   RotateCcw,
   ArrowUpCircle,
   Pencil,
+  RefreshCw,
 } from "lucide-react";
 import { Progress } from "../components/ui/progress";
 import { Separator } from "../components/ui/separator";
@@ -1805,7 +1806,7 @@ function GenerationPanel({
   const runAll = async () => {
     for (let i = 0; i < approvedVideos.length; i++) {
       const video = approvedVideos[i];
-      const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
+      const existingJob = existingJobs?.filter((j) => j.file_name === video.file_name).pop();
       if (existingJob && ["completed", "running", "pending"].includes(existingJob.status ?? "")) {
         continue;
       }
@@ -1890,23 +1891,22 @@ function GenerationPanel({
       )}
 
       {/* Approved videos for generation */}
-      {serverState === "running" && (
-        <>
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-slate-600">
-              {approvedVideos.length} approved videos ready for generation
-            </p>
-            <Button onClick={runAll} disabled={generatingIdx !== null} className="gap-2">
-              <Zap className="w-4 h-4" />
-              Generate All
-            </Button>
-          </div>
+      <>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-600">
+            {approvedVideos.length} approved videos ready for generation
+          </p>
+          <Button onClick={runAll} disabled={generatingIdx !== null || serverState !== "running"} className="gap-2">
+            <Zap className="w-4 h-4" />
+            Generate All
+          </Button>
+        </div>
 
           <div className="space-y-2">
             {approvedVideos.map((video, idx) => {
               const jobId = videoJobs[video.file_name];
               const isGenerating = generatingIdx === idx;
-              const existingJob = existingJobs?.find((j) => j.file_name === video.file_name);
+              const existingJob = existingJobs?.filter((j) => j.file_name === video.file_name).pop();
               // Determine status: DB status is canonical, local submission is "running"
               const jobStatus = existingJob?.status || (jobId ? "running" : undefined);
               const isCompletedJob = jobStatus === "completed";
@@ -1946,16 +1946,27 @@ function GenerationPanel({
                     )}
                   </div>
                   {isCompletedJob ? (
-                    <Badge className="bg-green-100 text-green-800 border-green-200 flex-shrink-0">
-                      <CheckCircle2 className="w-3 h-3 mr-1" /> Done
-                    </Badge>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <Badge className="bg-green-100 text-green-800 border-green-200">
+                        <CheckCircle2 className="w-3 h-3 mr-1" /> Done
+                      </Badge>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-slate-500 border-slate-200 hover:bg-slate-50"
+                        onClick={() => runGeneration(video, idx)}
+                        disabled={generatingIdx !== null || serverState !== "running"}
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 mr-1" /> Re-run
+                      </Button>
+                    </div>
                   ) : isFailedJob ? (
                     <Button
                       size="sm"
                       variant="outline"
                       className="text-red-600 border-red-200 hover:bg-red-50"
                       onClick={() => runGeneration(video, idx)}
-                      disabled={generatingIdx !== null}
+                      disabled={generatingIdx !== null || serverState !== "running"}
                     >
                       <XCircle className="w-3.5 h-3.5 mr-1" /> Retry
                     </Button>
@@ -1965,7 +1976,7 @@ function GenerationPanel({
                       variant="outline"
                       className="text-amber-600 border-amber-200 hover:bg-amber-50"
                       onClick={() => runGeneration(video, idx)}
-                      disabled={generatingIdx !== null}
+                      disabled={generatingIdx !== null || serverState !== "running"}
                       title="Status unavailable (server restarted)"
                     >
                       <Circle className="w-3.5 h-3.5 mr-1" /> Retry
@@ -1983,7 +1994,7 @@ function GenerationPanel({
                       size="sm"
                       variant="outline"
                       onClick={() => runGeneration(video, idx)}
-                      disabled={generatingIdx !== null}
+                      disabled={generatingIdx !== null || serverState !== "running"}
                     >
                       Generate
                     </Button>
@@ -1992,8 +2003,7 @@ function GenerationPanel({
               );
             })}
           </div>
-        </>
-      )}
+      </>
 
       {error && (
         <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-4 py-2">
