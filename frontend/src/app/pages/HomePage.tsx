@@ -144,6 +144,7 @@ function CreateInfluencerDialog({ onCreated }: { onCreated: () => void }) {
     const description = (form.get("description") as string).trim();
     const hashtagsRaw = (form.get("hashtags") as string).trim();
     const videoReq = (form.get("video_suggestions_requirement") as string).trim();
+    const appearanceDesc = (form.get("appearance_description") as string).trim();
 
     if (!influencerId || !name) {
       setError("ID and Name are required");
@@ -157,6 +158,7 @@ function CreateInfluencerDialog({ onCreated }: { onCreated: () => void }) {
         description: description || undefined,
         hashtags: hashtagsRaw ? hashtagsRaw.split(",").map((h) => h.trim().replace(/^#/, "")) : undefined,
         video_suggestions_requirement: videoReq || undefined,
+        appearance_description: appearanceDesc || undefined,
       });
 
       if (refImage) {
@@ -199,6 +201,10 @@ function CreateInfluencerDialog({ onCreated }: { onCreated: () => void }) {
         <div className="space-y-2">
           <Label htmlFor="video_suggestions_requirement">Video Selection Requirements</Label>
           <Textarea id="video_suggestions_requirement" name="video_suggestions_requirement" placeholder="Avoid videos with..." rows={2} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="appearance_description">Appearance Description</Label>
+          <Textarea id="appearance_description" name="appearance_description" placeholder="Describe the person's physical appearance for video generation prompts..." rows={3} />
         </div>
         <div className="space-y-2">
           <Label htmlFor="ref_image">Reference Image</Label>
