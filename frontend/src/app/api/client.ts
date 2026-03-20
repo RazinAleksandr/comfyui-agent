@@ -12,6 +12,9 @@ import type {
   AllocationInfo,
   ReviewVideo,
   ReviewData,
+  LoginRequest,
+  LoginResponse,
+  AuthUser,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -31,6 +34,11 @@ interface RequestOptions extends RequestInit {
   timeoutMs?: number;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem("auth_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchInit } = init ?? {};
   const controller = new AbortController();
@@ -39,11 +47,21 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   try {
     const res = await fetch(`${BASE}${path}`, {
       ...fetchInit,
+      headers: {
+        ...getAuthHeaders(),
+        ...fetchInit.headers,
+      },
       signal: controller.signal,
     });
     // Clear timeout once headers are received — don't abort during body parsing
     clearTimeout(timeoutId);
     if (!res.ok) {
+      if (res.status === 401) {
+        localStorage.removeItem("auth_token");
+        localStorage.removeItem("auth_user");
+        window.location.href = "/login";
+        throw new ApiError(401, "Unauthorized");
+      }
       const text = await res.text().catch(() => "");
       throw new ApiError(res.status, `API ${res.status}: ${text}`);
     }
@@ -59,6 +77,16 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
 }
 
 export const api = {
+  // -- Auth --
+  login: (body: LoginRequest) =>
+    request<LoginResponse>("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  me: () => request<AuthUser>("/auth/me"),
+
   // -- Influencers --
   listInfluencers: () => request<InfluencerOut[]>("/influencers"),
 

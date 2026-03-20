@@ -17,7 +17,10 @@ const SSE_URL = "/api/v1/events/stream";
 function connect(): void {
   if (eventSource) return;
 
-  eventSource = new EventSource(SSE_URL);
+  const token = localStorage.getItem("auth_token");
+  if (!token) return; // Don't connect without auth
+
+  eventSource = new EventSource(`${SSE_URL}?token=${encodeURIComponent(token)}`);
 
   eventSource.onopen = () => {
     reconnectDelay = 1000; // Reset backoff on successful connect

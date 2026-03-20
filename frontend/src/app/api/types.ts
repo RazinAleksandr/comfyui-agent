@@ -1,3 +1,9 @@
+// ---- Auth types ----
+
+export interface LoginRequest { username: string; password: string; }
+export interface LoginResponse { access_token: string; token_type: string; user: AuthUser; }
+export interface AuthUser { username: string; display_name: string; }
+
 // ---- API response types (match backend Pydantic models) ----
 
 export interface InfluencerOut {

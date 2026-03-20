@@ -29,6 +29,8 @@ vps = [
     "TikTokApi>=6.0",
     "playwright",
     "yt-dlp",
+    "PyJWT>=2.8",
+    "bcrypt>=4.0",
 ]
 
 [project.scripts]

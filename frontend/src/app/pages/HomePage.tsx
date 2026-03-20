@@ -16,18 +16,26 @@ import {
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
-import { Sparkles, Plus, Loader2 } from "lucide-react";
+import { Sparkles, Plus, Loader2, LogOut } from "lucide-react";
 import { useInfluencers } from "../api/hooks";
 import { api } from "../api/client";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
+import { useAuth } from "../auth/AuthContext";
 
 export default function HomePage() {
   const { data: influencers, loading, error, refetch } = useInfluencers();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const { user, logout } = useAuth();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="container mx-auto px-4 py-8">
+        <div className="absolute top-4 right-4 flex items-center gap-2">
+          <span className="text-sm text-slate-500">{user?.display_name}</span>
+          <Button variant="ghost" size="sm" onClick={logout} className="text-slate-500 hover:text-slate-700">
+            <LogOut className="w-4 h-4" />
+          </Button>
+        </div>
         <div className="mb-12 text-center">
           <div className="flex items-center justify-center gap-3 mb-4">
             <Sparkles className="w-10 h-10 text-purple-600" />

@@ -12,10 +12,13 @@ from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 from starlette.types import Receive, Scope, Send
 
+from fastapi import Depends
+
+from api.auth import get_current_user
 from api.database import Database
 from api.deps import init_deps
 from api.events import EventBus
-from api.routes import events, generation, health, influencers, jobs, parser
+from api.routes import auth, events, generation, health, influencers, jobs, parser
 from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
 
@@ -127,6 +130,23 @@ def create_app(
         except Exception:
             pass  # non-critical
 
+        # 6. Seed default admin user if users table is empty
+        try:
+            import os
+            from api.auth import hash_password
+            existing = await db.fetchone("SELECT id FROM users LIMIT 1")
+            if not existing:
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                admin_user = os.environ.get("AUTH_ADMIN_USERNAME", "admin")
+                admin_pass = os.environ.get("AUTH_ADMIN_PASSWORD", "admin")
+                await db.execute(
+                    "INSERT INTO users (username, password_hash, display_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
+                    [admin_user, hash_password(admin_pass), "Admin", now, now],
+                )
+                logger.info("Seeded default admin user: %s", admin_user)
+        except Exception:
+            logger.warning("Admin user seeding failed", exc_info=True)
+
     @app.on_event("shutdown")
     async def _shutdown() -> None:
         """Clean shutdown: flush progress, close DB."""
@@ -148,11 +168,15 @@ def create_app(
 
     # /health at root (no prefix)
     app.include_router(health.router)
-    # All business routes under /api/v1
-    app.include_router(parser.router, prefix=API_PREFIX)
-    app.include_router(influencers.router, prefix=API_PREFIX)
-    app.include_router(generation.router, prefix=API_PREFIX)
-    app.include_router(jobs.router, prefix=API_PREFIX)
+    # Auth routes (public — login/me handle their own auth)
+    app.include_router(auth.router, prefix=API_PREFIX)
+    # All business routes under /api/v1 (protected)
+    auth_dep = [Depends(get_current_user)]
+    app.include_router(parser.router, prefix=API_PREFIX, dependencies=auth_dep)
+    app.include_router(influencers.router, prefix=API_PREFIX, dependencies=auth_dep)
+    app.include_router(generation.router, prefix=API_PREFIX, dependencies=auth_dep)
+    app.include_router(jobs.router, prefix=API_PREFIX, dependencies=auth_dep)
+    # Events (SSE) — no global auth dep, token validated via query param inside endpoint
     app.include_router(events.router, prefix=API_PREFIX)
 
     # Serve files from shared/ directory (images, videos, pipeline outputs)
