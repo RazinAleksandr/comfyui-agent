@@ -11,7 +11,8 @@ import { Textarea } from "../components/ui/textarea";
 import { useInfluencer, usePipelineRun, useRawPipelineRun, useJobSSE, useConnectionStatus } from "../api/hooks";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { api } from "../api/client";
-import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo, VlmVideoDetail, FilterRejectedCandidate, InfluencerOut } from "../api/types";
+import type { VideoPreview, ReviewVideo, VlmAccepted, GenerationJob, AllocationInfo, VlmVideoDetail, FilterRejectedCandidate, InfluencerOut, QaResult } from "../api/types";
+import { subscribe } from "../api/sse";
 import {
   ArrowLeft,
   Download,
@@ -876,7 +877,6 @@ function RerunVlmDialog({ open, onClose, influencerId, runId, onJobStarted, infl
   influencer?: InfluencerOut | null;
 }) {
   const [theme, setTheme] = useState("influencer channel");
-  const [model, setModel] = useState("gemini-2.5-flash");
   const [maxVideos, setMaxVideos] = useState(30);
   const [minReadiness, setMinReadiness] = useState(7.0);
   const [minConfidence, setMinConfidence] = useState(0.70);
@@ -903,7 +903,6 @@ function RerunVlmDialog({ open, onClose, influencerId, runId, onJobStarted, infl
       const { job_id } = await api.rerunVlm(runId, {
         influencer_id: influencerId,
         theme,
-        model,
         max_videos: maxVideos,
         thresholds: {
           min_readiness: minReadiness,
@@ -966,14 +965,10 @@ function RerunVlmDialog({ open, onClose, influencerId, runId, onJobStarted, infl
 
           <Separator />
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label htmlFor="vlm-theme">Theme</Label>
               <Input id="vlm-theme" value={theme} onChange={(e) => setTheme(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="vlm-model">Model</Label>
-              <Input id="vlm-model" value={model} onChange={(e) => setModel(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="vlm-max-videos">Max Videos</Label>
@@ -1163,6 +1158,30 @@ function ReviewPanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRejected, setSelectedRejected] = useState<Set<string>>(new Set());
+  const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
+  const [feedbackIdx, setFeedbackIdx] = useState<number | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+
+  const handleRegenerate = async (idx: number) => {
+    const item = items[idx];
+    if (!feedbackText.trim()) return;
+    setRegeneratingIdx(idx);
+    try {
+      const result = await api.regenerateCaption(runId, {
+        influencer_id: influencerId,
+        file_name: item.file_name,
+        current_prompt: item.prompt,
+        feedback: feedbackText.trim(),
+      });
+      setPrompt(idx, result.caption);
+      setFeedbackIdx(null);
+      setFeedbackText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegeneratingIdx(null);
+    }
+  };
 
   const toggleRejectedSelection = (fileName: string) => {
     setSelectedRejected((prev) => {
@@ -1333,18 +1352,68 @@ function ReviewPanel({
 
               {/* Prompt input */}
               {item.approved && (
-                <div>
-                  <input
-                    type="text"
-                    placeholder="Enter generation prompt for this video..."
-                    value={item.prompt}
-                    onChange={(e) => setPrompt(idx, e.target.value)}
-                    className={`w-full px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                      !item.prompt.trim() ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
-                    }`}
-                  />
-                  {!item.prompt.trim() && (
-                    <p className="text-xs text-amber-600 mt-1">Prompt is required for approved videos</p>
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Enter generation prompt for this video..."
+                      value={item.prompt}
+                      onChange={(e) => setPrompt(idx, e.target.value)}
+                      className={`flex-1 px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                        !item.prompt.trim() ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
+                      }`}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1 text-xs flex-shrink-0"
+                      onClick={() => {
+                        if (feedbackIdx === idx) {
+                          setFeedbackIdx(null);
+                          setFeedbackText("");
+                        } else {
+                          setFeedbackIdx(idx);
+                          setFeedbackText("");
+                        }
+                      }}
+                      disabled={regeneratingIdx !== null}
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      Regenerate
+                    </Button>
+                  </div>
+                  {feedbackIdx === idx && (
+                    <div className="flex gap-2 items-start">
+                      <input
+                        type="text"
+                        placeholder="What to change? e.g. 'add more detail about hand movements'"
+                        value={feedbackText}
+                        onChange={(e) => setFeedbackText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && feedbackText.trim()) handleRegenerate(idx);
+                        }}
+                        className="flex-1 px-3 py-1.5 text-sm border border-blue-300 rounded-md bg-blue-50/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        autoFocus
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="gap-1 text-xs"
+                        onClick={() => handleRegenerate(idx)}
+                        disabled={!feedbackText.trim() || regeneratingIdx === idx}
+                      >
+                        {regeneratingIdx === idx ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3 h-3" />
+                        )}
+                        Go
+                      </Button>
+                    </div>
+                  )}
+                  {!item.prompt.trim() && feedbackIdx !== idx && (
+                    <p className="text-xs text-amber-600">Prompt is required for approved videos</p>
                   )}
                 </div>
               )}
@@ -1491,6 +1560,8 @@ function ReviewCompletedList({
   onComplete,
   onCancel,
   onPlay,
+  vlmRejectedItems,
+  rejectedVideoUrls,
 }: {
   videos: VideoPreview[];
   vlmAccepted: VlmAccepted[];
@@ -1501,6 +1572,8 @@ function ReviewCompletedList({
   onComplete: () => void;
   onCancel: () => void;
   onPlay?: (url: string, title: string) => void;
+  vlmRejectedItems?: VlmVideoDetail[];
+  rejectedVideoUrls?: Record<string, string>;
 }) {
   const [items, setItems] = useState(() =>
     videos.map(v => ({
@@ -1512,6 +1585,57 @@ function ReviewCompletedList({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
+  const [feedbackIdx, setFeedbackIdx] = useState<number | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [selectedRejected, setSelectedRejected] = useState<Set<string>>(new Set());
+  const [showRejectedInReview, setShowRejectedInReview] = useState(false);
+
+  const toggleRejectedSelection = (fileName: string) => {
+    setSelectedRejected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fileName)) next.delete(fileName);
+      else next.add(fileName);
+      return next;
+    });
+  };
+
+  const addSelectedToReview = () => {
+    if (!vlmRejectedItems) return;
+    const toAdd = vlmRejectedItems.filter((item) => selectedRejected.has(item.file_name));
+    const newItems = toAdd.map((item) => ({
+      file_name: item.file_name,
+      thumbnail: rejectedVideoUrls?.[item.file_name] ?? "",
+      approved: true,
+      prompt: "",
+    }));
+    setItems((prev) => {
+      const existingNames = new Set(prev.map((it) => it.file_name));
+      return [...prev, ...newItems.filter((n) => !existingNames.has(n.file_name))];
+    });
+    setSelectedRejected(new Set());
+  };
+
+  const handleRegenerate = async (idx: number) => {
+    const item = items[idx];
+    if (!feedbackText.trim()) return;
+    setRegeneratingIdx(idx);
+    try {
+      const result = await api.regenerateCaption(runId, {
+        influencer_id: influencerId,
+        file_name: item.file_name,
+        current_prompt: item.prompt,
+        feedback: feedbackText.trim(),
+      });
+      setItems(prev => prev.map((it, i) => i === idx ? { ...it, prompt: result.caption } : it));
+      setFeedbackIdx(null);
+      setFeedbackText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegeneratingIdx(null);
+    }
+  };
 
   useEffect(() => {
     if (initialReview && initialReview.length > 0) {
@@ -1606,18 +1730,66 @@ function ReviewCompletedList({
                 {/* Prompt */}
                 <div className="mt-2">
                   {editing ? (
-                    <div>
-                      <input
-                        type="text"
-                        placeholder="Enter generation prompt for this video..."
-                        value={item.prompt}
-                        onChange={e => setItems(prev => prev.map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it))}
-                        className={`w-full px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          !item.prompt.trim() && item.approved ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
-                        }`}
-                      />
-                      {!item.prompt.trim() && item.approved && (
-                        <p className="text-xs text-amber-600 mt-0.5">Prompt is required for approved videos</p>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Enter generation prompt for this video..."
+                          value={item.prompt}
+                          onChange={e => setItems(prev => prev.map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it))}
+                          className={`flex-1 px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            !item.prompt.trim() && item.approved ? "border-amber-400 bg-amber-50/50" : "border-slate-300"
+                          }`}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="gap-1 text-xs flex-shrink-0"
+                          onClick={() => {
+                            if (feedbackIdx === idx) {
+                              setFeedbackIdx(null);
+                              setFeedbackText("");
+                            } else {
+                              setFeedbackIdx(idx);
+                              setFeedbackText("");
+                            }
+                          }}
+                          disabled={regeneratingIdx !== null}
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          Regenerate
+                        </Button>
+                      </div>
+                      {feedbackIdx === idx && (
+                        <div className="flex gap-2 items-start">
+                          <input
+                            type="text"
+                            placeholder="What to change? e.g. 'include person description, more detail about poses'"
+                            value={feedbackText}
+                            onChange={e => setFeedbackText(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter" && feedbackText.trim()) handleRegenerate(idx); }}
+                            className="flex-1 px-3 py-1.5 text-sm border border-blue-300 rounded-md bg-blue-50/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            autoFocus
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="gap-1 text-xs"
+                            onClick={() => handleRegenerate(idx)}
+                            disabled={!feedbackText.trim() || regeneratingIdx === idx}
+                          >
+                            {regeneratingIdx === idx ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Sparkles className="w-3 h-3" />
+                            )}
+                            Go
+                          </Button>
+                        </div>
+                      )}
+                      {!item.prompt.trim() && item.approved && feedbackIdx !== idx && (
+                        <p className="text-xs text-amber-600">Prompt is required for approved videos</p>
                       )}
                     </div>
                   ) : (
@@ -1652,6 +1824,46 @@ function ReviewCompletedList({
           );
         })}
       </div>
+
+      {/* Rejected VLM videos — select to add to review (only in edit mode) */}
+      {editing && vlmRejectedItems && vlmRejectedItems.length > 0 && (
+        <div className="mt-6 pt-6 border-t border-slate-200">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={() => setShowRejectedInReview(!showRejectedInReview)}
+              className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+            >
+              <ChevronRight className={`w-4 h-4 transition-transform ${showRejectedInReview ? "rotate-90" : ""}`} />
+              Gemini Rejected ({vlmRejectedItems.filter((item) => !items.some((it) => it.file_name === item.file_name)).length}) — select to add to review
+            </button>
+            {showRejectedInReview && selectedRejected.size > 0 && (
+              <Button
+                size="sm"
+                className="gap-1.5 bg-blue-600 hover:bg-blue-700"
+                onClick={addSelectedToReview}
+              >
+                <ArrowUpCircle className="w-3.5 h-3.5" />
+                Add {selectedRejected.size} to Review
+              </Button>
+            )}
+          </div>
+          {showRejectedInReview && (
+            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
+              {vlmRejectedItems.filter((item) => !items.some((it) => it.file_name === item.file_name)).map((item) => (
+                <div key={item.file_name} className="relative flex-shrink-0">
+                  <VlmRejectedCard
+                    item={item}
+                    thumbnailUrl={rejectedVideoUrls?.[item.file_name]}
+                    onPlay={onPlay}
+                    selected={selectedRejected.has(item.file_name)}
+                    onToggleSelect={toggleRejectedSelection}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1698,6 +1910,31 @@ function GenerationPanel({
   const [autoShutdown, setAutoShutdown] = useState(false);
   const [allocation, setAllocation] = useState<AllocationInfo | null>(null);
   const [shuttingDown, setShuttingDown] = useState(false);
+  const [alignReference, setAlignReference] = useState(true);
+  // QA review state: job_id → { status, result }
+  const [qaReviews, setQaReviews] = useState<Record<string, { qa_status: string; qa_result?: QaResult }>>({});
+
+  // Seed QA state from existing jobs
+  useEffect(() => {
+    const initial: Record<string, { qa_status: string; qa_result?: QaResult }> = {};
+    for (const job of existingJobs ?? []) {
+      if (job.qa_status) {
+        initial[job.job_id] = { qa_status: job.qa_status, qa_result: job.qa_result };
+      }
+    }
+    setQaReviews((prev) => ({ ...initial, ...prev }));
+  }, [existingJobs]);
+
+  // Subscribe to QA review SSE events
+  useEffect(() => {
+    return subscribe("qa_review", (data: unknown) => {
+      const d = data as { job_id: string; qa_status: string; qa_result?: QaResult };
+      setQaReviews((prev) => ({
+        ...prev,
+        [d.job_id]: { qa_status: d.qa_status, qa_result: d.qa_result },
+      }));
+    });
+  }, []);
 
   const approvedVideos = reviewVideos.filter((v) => v.approved);
   const { job: serverJob } = useJobSSE(serverJobId);
@@ -1794,6 +2031,7 @@ function GenerationPanel({
         influencer_id: influencerId,
         reference_video: videoPath,
         prompt: video.prompt,
+        align_reference: alignReference,
       });
       setVideoJobs((prev) => ({ ...prev, [video.file_name]: job_id }));
     } catch (err) {
@@ -1893,9 +2131,20 @@ function GenerationPanel({
       {/* Approved videos for generation */}
       <>
         <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-600">
-            {approvedVideos.length} approved videos ready for generation
-          </p>
+          <div className="flex items-center gap-4">
+            <p className="text-sm text-slate-600">
+              {approvedVideos.length} approved videos ready for generation
+            </p>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={alignReference}
+                onChange={() => setAlignReference(!alignReference)}
+                className="rounded border-slate-300"
+              />
+              Align reference to video
+            </label>
+          </div>
           <Button onClick={runAll} disabled={generatingIdx !== null || serverState !== "running"} className="gap-2">
             <Zap className="w-4 h-4" />
             Generate All
@@ -1926,6 +2175,16 @@ function GenerationPanel({
                     {video.prompt && (
                       <p className="text-xs text-slate-500 truncate italic">"{video.prompt}"</p>
                     )}
+                    {existingJob?.aligned_image_url && (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-[10px] text-slate-400">Aligned ref:</span>
+                        <img
+                          src={existingJob.aligned_image_url}
+                          alt="Aligned reference"
+                          className="w-10 h-14 rounded border border-slate-200 object-cover"
+                        />
+                      </div>
+                    )}
                     {isRunningJob && <GenerationJobProgress jobId={existingJob?.job_id || jobId} />}
                     {isCompletedJob && existingJob?.outputs && existingJob.outputs.length > 0 && (
                       <div className="flex gap-2 mt-2">
@@ -1944,6 +2203,59 @@ function GenerationPanel({
                         ))}
                       </div>
                     )}
+                    {/* QA Review result */}
+                    {(() => {
+                      const qa = qaReviews[existingJob?.job_id || jobId];
+                      if (!qa) return null;
+                      if (qa.qa_status === "pending") {
+                        return (
+                          <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-600">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            QA Review in progress...
+                          </div>
+                        );
+                      }
+                      if (qa.qa_status === "failed") {
+                        return (
+                          <div className="flex items-center gap-1.5 mt-2 text-xs text-red-500">
+                            <XCircle className="w-3 h-3" />
+                            QA Review failed{qa.qa_result?.error ? `: ${qa.qa_result.error}` : ""}
+                          </div>
+                        );
+                      }
+                      if (qa.qa_status === "completed" && qa.qa_result) {
+                        const r = qa.qa_result;
+                        const badgeCls = r.verdict === "pass"
+                          ? "bg-green-100 text-green-800 border-green-200"
+                          : r.verdict === "fail"
+                            ? "bg-red-100 text-red-800 border-red-200"
+                            : "bg-amber-100 text-amber-800 border-amber-200";
+                        return (
+                          <div className="mt-2 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Badge className={`text-[10px] px-1.5 py-0 ${badgeCls}`}>
+                                {r.verdict === "pass" ? <CheckCircle2 className="w-2.5 h-2.5 mr-0.5" /> : r.verdict === "fail" ? <XCircle className="w-2.5 h-2.5 mr-0.5" /> : <AlertCircle className="w-2.5 h-2.5 mr-0.5" />}
+                                QA: {r.verdict?.toUpperCase()}
+                              </Badge>
+                              <span className="text-[10px] text-slate-500">Score: {r.score?.toFixed(1)}/10</span>
+                            </div>
+                            {r.summary && (
+                              <p className="text-[10px] text-slate-500 italic">{r.summary}</p>
+                            )}
+                            {r.issues && r.issues.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {r.issues.map((issue, ii) => (
+                                  <span key={ii} className="text-[9px] px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-100">
+                                    {issue}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                   {isCompletedJob ? (
                     <div className="flex items-center gap-2 flex-shrink-0">
@@ -2302,6 +2614,8 @@ export default function TaskDetailPage() {
                         onComplete={() => { setEditingReview(false); refetchAll(); }}
                         onCancel={() => setEditingReview(false)}
                         onPlay={handlePlayVideo}
+                        vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
+                        rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
                       />
                     )}
 

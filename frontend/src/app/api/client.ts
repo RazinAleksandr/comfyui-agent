@@ -82,6 +82,12 @@ export const api = {
     );
   },
 
+  generateAppearance: (id: string) =>
+    request<{ appearance_description: string }>(
+      `/influencers/${id}/generate-appearance`,
+      { method: "POST", timeoutMs: 120_000 },
+    ),
+
   // -- Parser / Pipeline --
   getParserDefaults: () =>
     request<{ default_sources: Record<string, string> }>("/parser/defaults"),
@@ -106,7 +112,6 @@ export const api = {
   rerunVlm: (runId: string, body: {
     influencer_id: string;
     theme?: string;
-    model?: string;
     max_videos?: number;
     thresholds?: {
       min_readiness?: number;
@@ -141,6 +146,17 @@ export const api = {
     request<{ status: string; file_name: string }>(
       `/parser/runs/${encodeURIComponent(runId)}/promote`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+
+  regenerateCaption: (runId: string, body: {
+    influencer_id: string;
+    file_name: string;
+    current_prompt: string;
+    feedback: string;
+  }) =>
+    request<{ caption: string }>(
+      `/parser/runs/${encodeURIComponent(runId)}/regenerate-caption`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), timeoutMs: 120_000 },
     ),
 
   // -- Review --

@@ -123,6 +123,69 @@ def call_gemini(
     return parsed, model_text
 
 
+IMAGE_MIME_BY_SUFFIX = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def call_gemini_image(
+    *,
+    model: str,
+    api_key: str,
+    image_path: Path,
+    prompt: str,
+    timeout_sec: int = 60,
+    temperature: float = 0.2,
+) -> str:
+    """Call Gemini with an image and return the raw text response."""
+    mime_type = IMAGE_MIME_BY_SUFFIX.get(image_path.suffix.lower())
+    if not mime_type:
+        raise RuntimeError(f"unsupported image extension: {image_path.suffix}")
+
+    binary = image_path.read_bytes()
+    payload = {
+        "generationConfig": {"temperature": temperature},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64.b64encode(binary).decode("ascii"),
+                        }
+                    },
+                ],
+            }
+        ],
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    response = requests.post(
+        url,
+        params={"key": api_key},
+        json=payload,
+        timeout=timeout_sec,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise RuntimeError(f"no candidates returned: {data}")
+
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text_parts = [str(part.get("text") or "").strip() for part in parts if part.get("text")]
+    model_text = "\n".join([p for p in text_parts if p]).strip()
+    if not model_text:
+        raise RuntimeError(f"no text output in model response: {data}")
+
+    return model_text
+
+
 def mock_summary(video_path: Path) -> tuple[dict, str]:
     seed = int(hashlib.sha1(str(video_path).encode("utf-8")).hexdigest()[:8], 16)
     readiness = 5.5 + ((seed % 420) / 100.0)

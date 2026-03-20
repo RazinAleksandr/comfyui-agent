@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Link, useParams, useNavigate } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -35,11 +35,8 @@ import {
   Play,
   Pencil,
   Trash2,
-  ChevronDown,
-  ChevronRight,
   Settings2,
 } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Separator } from "../components/ui/separator";
 import { Switch } from "../components/ui/switch";
 
@@ -112,13 +109,27 @@ export default function AvatarDetailPage() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   // Pipeline stage config (lifted so cards on page can edit them)
-  const [expandedStage, setExpandedStage] = useState<string | null>(null);
   const [filterTopK, setFilterTopK] = useState(15);
   const [vlmMaxVideos, setVlmMaxVideos] = useState(15);
   const [autoReview, setAutoReview] = useState(true);
-  const [captionModel, setCaptionModel] = useState("gemini-2.5-flash");
+  const [tiktok, setTiktok] = useState(true);
+  const [instagram, setInstagram] = useState(false);
+  const [limit, setLimit] = useState(10);
+  const [hashtags, setHashtags] = useState(influencer?.hashtags?.join(", ") ?? "");
+  const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
+  const [alignReference, setAlignReference] = useState(true);
+  const [settingsDialog, setSettingsDialog] = useState<string | null>(null);
 
-  const toggleStage = (stage: string) => setExpandedStage((p) => (p === stage ? null : stage));
+  // Load default sources from config
+  useEffect(() => {
+    api.getParserDefaults().then((d) => setDefaultSources(d.default_sources)).catch(() => {});
+  }, []);
+
+  // Sync hashtags when influencer loads
+  useEffect(() => {
+    if (influencer?.hashtags) setHashtags(influencer.hashtags.join(", "));
+  }, [influencer?.hashtags]);
+
   const { job: activeJob, isComplete: jobDone } = useJobSSE(activeJobId);
 
   // On mount, restore any active pipeline job for this influencer
@@ -261,17 +272,30 @@ export default function AvatarDetailPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {influencer.video_suggestions_requirement && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
-                  <Eye className="w-4 h-4" />
-                  Video Selection Requirements
-                </h4>
-                <p className="text-sm text-amber-800">
-                  {influencer.video_suggestions_requirement}
-                </p>
-              </div>
-            )}
+            <div className="space-y-3">
+              {influencer.appearance_description && (
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-purple-900 mb-2 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" />
+                    Appearance Description
+                  </h4>
+                  <p className="text-sm text-purple-800">
+                    {influencer.appearance_description}
+                  </p>
+                </div>
+              )}
+              {influencer.video_suggestions_requirement && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+                    <Eye className="w-4 h-4" />
+                    Video Selection Requirements
+                  </h4>
+                  <p className="text-sm text-amber-800">
+                    {influencer.video_suggestions_requirement}
+                  </p>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -287,96 +311,160 @@ export default function AvatarDetailPage() {
         {/* Pipeline Stages Overview */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
           {Object.entries(stageIcons).map(([key, Icon]) => {
-            const isConfigurable = key === "candidate_filter" || key === "vlm_scoring" || key === "review";
-            const isExpanded = expandedStage === key;
+            const isConfigurable = key === "trend_ingestion" || key === "candidate_filter" || key === "vlm_scoring" || key === "review" || key === "generation";
             return (
               <Card
                 key={key}
-                className={`transition-shadow ${isConfigurable ? "cursor-pointer hover:shadow-md" : ""} ${isExpanded ? "ring-2 ring-purple-300 shadow-md" : ""}`}
-                onClick={isConfigurable ? () => toggleStage(key) : undefined}
+                className={`transition-shadow flex flex-col ${isConfigurable ? "cursor-pointer hover:shadow-md" : ""}`}
+                onClick={isConfigurable ? () => setSettingsDialog(key) : undefined}
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isExpanded ? "bg-purple-200" : "bg-purple-100"}`}>
+                      <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-purple-100">
                         <Icon className="w-5 h-5 text-purple-600" />
                       </div>
                       <CardTitle className="text-lg">
                         {stageTitles[key as keyof typeof stageTitles]}
                       </CardTitle>
                     </div>
-                    {isConfigurable && (
-                      isExpanded
-                        ? <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                        : <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    )}
+                    {isConfigurable && <Settings2 className="w-4 h-4 text-slate-400 flex-shrink-0" />}
                   </div>
                 </CardHeader>
-                <CardContent onClick={(e) => e.stopPropagation()}>
+                <CardContent className="flex-1 flex flex-col">
                   <p className="text-sm text-slate-600 mb-3">
                     {stageDescriptions[key as keyof typeof stageDescriptions]}
                   </p>
-                  {isExpanded && key === "candidate_filter" && (
-                    <div className="space-y-1 pt-2 border-t">
-                      <Label htmlFor="cfg-filter-top-k" className="text-xs text-slate-500">Top K</Label>
-                      <Input
-                        id="cfg-filter-top-k"
-                        type="number"
-                        value={filterTopK}
-                        onChange={(e) => setFilterTopK(parseInt(e.target.value) || 15)}
-                        min={1}
-                        max={200}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </div>
-                  )}
-                  {isExpanded && key === "vlm_scoring" && (
-                    <div className="space-y-1 pt-2 border-t">
-                      <Label htmlFor="cfg-vlm-max" className="text-xs text-slate-500">Max Videos</Label>
-                      <Input
-                        id="cfg-vlm-max"
-                        type="number"
-                        value={vlmMaxVideos}
-                        onChange={(e) => setVlmMaxVideos(parseInt(e.target.value) || 15)}
-                        min={1}
-                        max={200}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </div>
-                  )}
-                  {isExpanded && key === "review" && (
-                    <div className="space-y-3 pt-2 border-t">
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="cfg-auto-review" className="text-xs text-slate-500">Auto-review (AI captions)</Label>
-                        <Switch
-                          id="cfg-auto-review"
-                          checked={autoReview}
-                          onCheckedChange={setAutoReview}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </div>
-                      {autoReview && (
-                        <div className="space-y-1">
-                          <Label htmlFor="cfg-caption-model" className="text-xs text-slate-500">Caption Model</Label>
-                          <Select value={captionModel} onValueChange={setCaptionModel}>
-                            <SelectTrigger id="cfg-caption-model" size="sm" onClick={(e) => e.stopPropagation()}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
-                              <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
-                              <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <div className="mt-auto pt-2 border-t text-xs text-slate-500 space-y-0.5">
+                    {key === "trend_ingestion" && (
+                      <>
+                        <div>Platforms: <span className="font-medium text-slate-700">{[tiktok && "TikTok", instagram && "Instagram"].filter(Boolean).join(", ") || "none"}</span></div>
+                        <div>Limit: <span className="font-medium text-slate-700">{limit}</span></div>
+                        {hashtags && <div>Hashtags: <span className="font-medium text-slate-700">{hashtags}</span></div>}
+                      </>
+                    )}
+                    {key === "candidate_filter" && (
+                      <div>Top K: <span className="font-medium text-slate-700">{filterTopK}</span></div>
+                    )}
+                    {key === "vlm_scoring" && (
+                      <div>Max videos: <span className="font-medium text-slate-700">{vlmMaxVideos}</span></div>
+                    )}
+                    {key === "review" && (
+                      <div>Auto-review: <span className="font-medium text-slate-700">{autoReview ? "yes" : "no"}</span></div>
+                    )}
+                    {key === "download" && (
+                      <div>Mode: <span className="font-medium text-slate-700">yt-dlp</span></div>
+                    )}
+                    {key === "generation" && (
+                      <>
+                        <div>Workflow: <span className="font-medium text-slate-700">wan_animate</span></div>
+                        <div>Align reference: <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span></div>
+                      </>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             );
           })}
         </div>
+
+        {/* Stage settings dialogs */}
+        <Dialog open={settingsDialog === "trend_ingestion"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Trend Ingestion Settings</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Platforms</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={tiktok} onChange={(e) => setTiktok(e.target.checked)} className="rounded" />
+                    TikTok
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={instagram} onChange={(e) => setInstagram(e.target.checked)} className="rounded" />
+                    Instagram
+                  </label>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cfg-limit">Limit per platform</Label>
+                <Input id="cfg-limit" type="number" value={limit} onChange={(e) => setLimit(parseInt(e.target.value) || 10)} min={1} max={200} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cfg-hashtags">Hashtags (comma-separated)</Label>
+                <Input id="cfg-hashtags" value={hashtags} onChange={(e) => setHashtags(e.target.value)} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setSettingsDialog(null)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={settingsDialog === "candidate_filter"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Candidate Filter Settings</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="cfg-filter-top-k">Top K</Label>
+              <Input id="cfg-filter-top-k" type="number" value={filterTopK} onChange={(e) => setFilterTopK(parseInt(e.target.value) || 15)} min={1} max={200} />
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setSettingsDialog(null)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={settingsDialog === "vlm_scoring"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>VLM Scoring Settings</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="cfg-vlm-max">Max Videos</Label>
+              <Input id="cfg-vlm-max" type="number" value={vlmMaxVideos} onChange={(e) => setVlmMaxVideos(parseInt(e.target.value) || 15)} min={1} max={200} />
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setSettingsDialog(null)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={settingsDialog === "review"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Review Settings</DialogTitle>
+            </DialogHeader>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="cfg-auto-review">Auto-review (AI captions)</Label>
+              <Switch id="cfg-auto-review" checked={autoReview} onCheckedChange={setAutoReview} />
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setSettingsDialog(null)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={settingsDialog === "generation"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Generation Settings</DialogTitle>
+            </DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="cfg-align-ref">Align reference to video</Label>
+                <p className="text-xs text-slate-500 mt-0.5">Generate adapted character image per video before ComfyUI</p>
+              </div>
+              <Switch id="cfg-align-ref" checked={alignReference} onCheckedChange={setAlignReference} />
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setSettingsDialog(null)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Generation Tasks */}
         <div className="mb-6 flex items-center justify-between">
@@ -393,13 +481,17 @@ export default function AvatarDetailPage() {
                 Start Pipeline
               </Button>
             </DialogTrigger>
-            <StartPipelineDialog
+            <StartPipelineConfirm
               influencerId={influencer.influencer_id}
-              defaultHashtags={influencer.hashtags ?? []}
+              tiktok={tiktok}
+              instagram={instagram}
+              limit={limit}
+              hashtags={hashtags}
               filterTopK={filterTopK}
               vlmMaxVideos={vlmMaxVideos}
               autoReview={autoReview}
-              captionModel={captionModel}
+              alignReference={alignReference}
+              defaultSources={defaultSources}
               onStarted={(jobId) => {
                 setPipelineDialogOpen(false);
                 setActiveJobId(jobId);
@@ -598,6 +690,21 @@ function EditInfluencerDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refImage, setRefImage] = useState<File | null>(null);
+  const [appearanceDesc, setAppearanceDesc] = useState(influencer.appearance_description ?? "");
+  const [generatingAppearance, setGeneratingAppearance] = useState(false);
+
+  const handleGenerateAppearance = async () => {
+    setGeneratingAppearance(true);
+    setError(null);
+    try {
+      const result = await api.generateAppearance(influencer.influencer_id);
+      setAppearanceDesc(result.appearance_description);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingAppearance(false);
+    }
+  };
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -622,6 +729,7 @@ function EditInfluencerDialog({
         description: description || undefined,
         hashtags: hashtagsRaw ? hashtagsRaw.split(",").map((h) => h.trim().replace(/^#/, "")) : undefined,
         video_suggestions_requirement: videoReq || undefined,
+        appearance_description: appearanceDesc || undefined,
       });
 
       if (refImage) {
@@ -660,6 +768,32 @@ function EditInfluencerDialog({
         <div className="space-y-2">
           <Label htmlFor="edit-video-req">Video Selection Requirements</Label>
           <Textarea id="edit-video-req" name="video_suggestions_requirement" defaultValue={influencer.video_suggestions_requirement ?? ""} rows={2} />
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="edit-appearance">Appearance Description</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs"
+              onClick={handleGenerateAppearance}
+              disabled={generatingAppearance || !influencer.reference_image_path}
+            >
+              {generatingAppearance ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              Generate with AI
+            </Button>
+          </div>
+          <Textarea
+            id="edit-appearance"
+            value={appearanceDesc}
+            onChange={(e) => setAppearanceDesc(e.target.value)}
+            rows={3}
+            placeholder="Describe the person's physical appearance for video generation prompts..."
+          />
+          {!influencer.reference_image_path && (
+            <p className="text-xs text-slate-500">Upload a reference image first to use AI generation.</p>
+          )}
         </div>
         <div className="space-y-2">
           <Label htmlFor="edit-ref-image">Reference Image</Label>
@@ -730,138 +864,121 @@ function DeleteInfluencerDialog({
   );
 }
 
-function StartPipelineDialog({
+function StartPipelineConfirm({
   influencerId,
-  defaultHashtags,
+  tiktok,
+  instagram,
+  limit,
+  hashtags,
   filterTopK,
   vlmMaxVideos,
   autoReview,
-  captionModel,
+  alignReference,
+  defaultSources,
   onStarted,
 }: {
   influencerId: string;
-  defaultHashtags: string[];
+  tiktok: boolean;
+  instagram: boolean;
+  limit: number;
+  hashtags: string;
   filterTopK: number;
   vlmMaxVideos: number;
   autoReview: boolean;
-  captionModel: string;
+  alignReference: boolean;
+  defaultSources: Record<string, string>;
   onStarted: (jobId: string) => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tiktok, setTiktok] = useState(true);
-  const [instagram, setInstagram] = useState(false);
-  const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
 
-  // Load default sources from config
-  const [defaultsError, setDefaultsError] = useState(false);
-  useEffect(() => {
-    api.getParserDefaults().then((d) => {
-      setDefaultSources(d.default_sources);
-      setDefaultsError(false);
-    }).catch(() => {
-      setDefaultsError(true);
-    });
-  }, []);
+  const platformList = [tiktok && "TikTok", instagram && "Instagram"].filter(Boolean).join(", ");
+  const parsedHashtags = hashtags.trim()
+    ? hashtags.split(",").map((h) => h.trim().replace(/^#/, "")).filter(Boolean)
+    : [];
 
-  const handleSubmit = useCallback(
-    async (e: React.SyntheticEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      setSubmitting(true);
-      setError(null);
+  const handleRun = async () => {
+    if (!tiktok && !instagram) {
+      setError("No platforms selected — configure in the Trend Ingestion card");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
 
-      const form = new FormData(e.currentTarget);
-      const limit = parseInt(form.get("limit") as string) || 10;
-      const hashtagsRaw = (form.get("hashtags") as string).trim();
-      const hashtags = hashtagsRaw
-        ? hashtagsRaw.split(",").map((h) => h.trim().replace(/^#/, ""))
-        : undefined;
+    const platforms: Record<string, { source: string; limit: number; selector?: { hashtags: string[] } }> = {};
+    if (tiktok) {
+      platforms.tiktok = { source: defaultSources.tiktok || "tiktok_custom", limit, ...(parsedHashtags.length ? { selector: { hashtags: parsedHashtags } } : {}) };
+    }
+    if (instagram) {
+      platforms.instagram = { source: defaultSources.instagram || "apify", limit, ...(parsedHashtags.length ? { selector: { hashtags: parsedHashtags } } : {}) };
+    }
 
-      const platforms: Record<string, { source: string; limit: number; selector?: { hashtags: string[] } }> = {};
-      if (tiktok) {
-        platforms.tiktok = { source: defaultSources.tiktok || "tiktok_custom", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
-      }
-      if (instagram) {
-        platforms.instagram = { source: defaultSources.instagram || "apify", limit, ...(hashtags ? { selector: { hashtags } } : {}) };
-      }
-
-      if (Object.keys(platforms).length === 0) {
-        setError("Select at least one platform");
-        setSubmitting(false);
-        return;
-      }
-
-      try {
-        const { job_id } = await api.startPipeline({
-          influencer_id: influencerId,
-          platforms,
-          filter: { top_k: filterTopK },
-          vlm: { max_videos: vlmMaxVideos },
-          ...(autoReview ? { review: { auto: true, model: captionModel } } : {}),
-        });
-        onStarted(job_id);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [influencerId, tiktok, instagram, defaultSources, filterTopK, vlmMaxVideos, autoReview, captionModel, onStarted],
-  );
+    try {
+      const { job_id } = await api.startPipeline({
+        influencer_id: influencerId,
+        platforms,
+        filter: { top_k: filterTopK },
+        vlm: { max_videos: vlmMaxVideos },
+        ...(autoReview ? { review: { auto: true } } : {}),
+      });
+      onStarted(job_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <DialogContent className="sm:max-w-md">
       <DialogHeader>
-        <DialogTitle>Start Pipeline</DialogTitle>
+        <DialogTitle>Confirm Pipeline Run</DialogTitle>
         <DialogDescription>
-          Run the full trend discovery pipeline for {influencerId}
+          Review settings before starting the pipeline for {influencerId}
         </DialogDescription>
       </DialogHeader>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="space-y-2">
-          <Label>Platforms</Label>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={tiktok} onChange={(e) => setTiktok(e.target.checked)} className="rounded" />
-              TikTok
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={instagram} onChange={(e) => setInstagram(e.target.checked)} className="rounded" />
-              Instagram
-            </label>
+      <div className="rounded-lg bg-slate-50 border px-4 py-3 text-sm text-slate-600 space-y-2">
+        <div className="flex justify-between">
+          <span className="text-slate-500">Platforms</span>
+          <span className="font-medium text-slate-700">{platformList || "none"}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-500">Limit per platform</span>
+          <span className="font-medium text-slate-700">{limit}</span>
+        </div>
+        {parsedHashtags.length > 0 && (
+          <div className="flex justify-between">
+            <span className="text-slate-500">Hashtags</span>
+            <span className="font-medium text-slate-700">{parsedHashtags.map(h => `#${h}`).join(", ")}</span>
           </div>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="limit">Limit per platform</Label>
-          <Input id="limit" name="limit" type="number" defaultValue={10} min={1} max={200} />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="hashtags">Hashtags (comma-separated)</Label>
-          <Input id="hashtags" name="hashtags" defaultValue={defaultHashtags.join(", ")} />
-        </div>
-
-        {/* Stage config summary */}
-        <div className="rounded-lg bg-slate-50 border px-3 py-2 text-xs text-slate-500 space-y-0.5">
-          <div className="flex items-center gap-1.5 font-medium text-slate-600 mb-1">
-            <Settings2 className="w-3.5 h-3.5" />
-            Stage config (edit on the cards above)
-          </div>
-          <div>Filter — Top K: <span className="font-medium text-slate-700">{filterTopK}</span></div>
-          <div>VLM — Max videos: <span className="font-medium text-slate-700">{vlmMaxVideos}</span></div>
-          <div>Review — Auto: <span className="font-medium text-slate-700">{autoReview ? `yes (${captionModel})` : "no"}</span></div>
-        </div>
-
-        {defaultsError && (
-          <p className="text-sm text-amber-600">Could not load pipeline defaults -- using fallback values.</p>
         )}
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <DialogFooter>
-          <Button type="submit" disabled={submitting}>
-            {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Start Pipeline
-          </Button>
-        </DialogFooter>
-      </form>
+        <Separator />
+        <div className="flex justify-between">
+          <span className="text-slate-500">Filter — Top K</span>
+          <span className="font-medium text-slate-700">{filterTopK}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-500">VLM — Max videos</span>
+          <span className="font-medium text-slate-700">{vlmMaxVideos}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-500">Auto-review</span>
+          <span className="font-medium text-slate-700">{autoReview ? "yes" : "no"}</span>
+        </div>
+        <Separator />
+        <div className="flex justify-between">
+          <span className="text-slate-500">Align reference</span>
+          <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span>
+        </div>
+      </div>
+      <p className="text-xs text-slate-400">To change settings, close this dialog and click on the stage cards above.</p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <DialogFooter>
+        <Button onClick={handleRun} disabled={submitting} className="gap-2">
+          {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Confirm and Run
+        </Button>
+      </DialogFooter>
     </DialogContent>
   );
 }

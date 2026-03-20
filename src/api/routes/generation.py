@@ -126,6 +126,7 @@ class GenerationRequest(BaseModel):
     prompt: str = ""
     set_args: dict[str, str] = Field(default_factory=dict)
     output_dir: str | None = None
+    align_reference: bool = False
 
 
 class ServerRequest(BaseModel):
@@ -232,6 +233,8 @@ async def server_up(body: ServerRequest) -> dict:
         # Legacy: use default allocation
         server_id, svc = manager.allocate_server("__default__", body.workflow)
 
+    logger.info("Server UP requested: server_id=%s influencer=%s workflow=%s", server_id, influencer_id, body.workflow)
+
     jm = get_job_manager()
     job_id = jm.submit_tagged(
         _do_server_up,
@@ -239,6 +242,7 @@ async def server_up(body: ServerRequest) -> dict:
         server_id=server_id,
         workflow=body.workflow,
     )
+    logger.info("Server UP job submitted: job_id=%s server_id=%s", job_id, server_id)
     return {"job_id": job_id, "server_id": server_id}
 
 
@@ -353,6 +357,18 @@ async def start_generation(body: GenerationRequest) -> dict:
         if candidate.exists():
             image_path = str(candidate)
 
+    # Load appearance description for reference alignment
+    appearance_description = ""
+    if body.align_reference:
+        try:
+            from api.deps import get_db_store
+            db_store = get_db_store()
+            inf_record = await db_store.load_influencer(body.influencer_id)
+            if inf_record:
+                appearance_description = inf_record.get("appearance_description") or ""
+        except Exception:
+            pass
+
     # Resolve output_dir: if reference_video is inside a pipeline run, put output
     # in a sibling "generated/" folder next to "selected/".
     output_dir = body.output_dir
@@ -394,6 +410,8 @@ async def start_generation(body: GenerationRequest) -> dict:
         set_args=body.set_args,
         influencer_id=body.influencer_id,
         server_id=server_id,
+        align_reference=body.align_reference,
+        appearance_description=appearance_description,
     )
 
     # Persist job to generation_jobs table
@@ -413,12 +431,14 @@ async def start_generation(body: GenerationRequest) -> dict:
 
 async def _do_server_up(*, server_id: str, workflow: str) -> dict:
     """Bring up the GPU server for a specific server_id."""
+    logger.info("_do_server_up: starting server_id=%s workflow=%s", server_id, workflow)
     manager = get_server_manager()
     svc = manager.get_or_create_service(server_id)
 
     # Check if already running
     current = await asyncio.to_thread(svc.status)
     if current.running:
+        logger.info("_do_server_up: server %s already running (instance=%s)", server_id, current.instance_id)
         manager.update_registry_from_service(server_id)
         return {
             "status": "already_running",
@@ -427,7 +447,12 @@ async def _do_server_up(*, server_id: str, workflow: str) -> dict:
             "dph_total": current.dph_total,
         }
 
+    logger.info("_do_server_up: calling svc.up() for server %s ...", server_id)
     result = await asyncio.to_thread(svc.up, workflow)
+    logger.info(
+        "_do_server_up: server %s started — instance=%s ssh=%s:%s dph=%.3f",
+        server_id, result.instance_id, result.ssh_host, result.ssh_port, result.dph_total or 0,
+    )
 
     # Sync registry with actual instance data
     manager.update_registry_from_service(server_id)
@@ -452,6 +477,8 @@ async def _do_generation(
     set_args: dict[str, str],
     influencer_id: str,
     server_id: str,
+    align_reference: bool = False,
+    appearance_description: str = "",
     progress_fn: Callable[[dict], None] | None = None,
     job_id: str | None = None,
 ) -> dict:
@@ -459,6 +486,29 @@ async def _do_generation(
     manager = get_server_manager()
     svc = manager.get_or_create_service(server_id)
     server_lock = manager.get_server_lock(server_id)
+
+    # Reference alignment: generate adapted character image before GPU work
+    if align_reference and image_path and video_path:
+        try:
+            from api.ref_align import align_reference_image
+
+            if progress_fn:
+                progress_fn({"phase": "aligning", "stage": "reference_alignment"})
+
+            aligned = await align_reference_image(
+                influencer_id=influencer_id,
+                reference_image_path=image_path,
+                reference_video_path=video_path,
+                appearance_description=appearance_description,
+                video_prompt=prompt,
+                output_dir=output_dir,
+                job_id=job_id or "",
+            )
+            if aligned:
+                image_path = aligned
+                logger.info("Using aligned reference: %s", aligned)
+        except Exception:
+            logger.warning("Reference alignment failed, using original image", exc_info=True)
 
     # Report "queued" while waiting for the lock
     if progress_fn:
@@ -552,6 +602,26 @@ async def _do_generation(
             await _update_generation_job_complete(job_id, outputs, result.output_dir)
         except Exception:
             logger.warning("Failed to update generation_jobs on completion", exc_info=True)
+
+        # Fire QA review in background (non-blocking)
+        try:
+            from api.qa_review import run_qa_review
+
+            # Pick best generated output: last one (postprocessed > upscaled > refined > raw)
+            gen_video = None
+            for out_path in reversed(outputs):
+                if Path(out_path).is_file():
+                    gen_video = out_path
+                    break
+
+            if gen_video and video_path:
+                asyncio.create_task(run_qa_review(
+                    job_id=job_id,
+                    original_video_path=video_path,
+                    generated_video_path=gen_video,
+                ))
+        except Exception:
+            logger.warning("Failed to start QA review for %s", job_id, exc_info=True)
 
     return {
         "influencer_id": influencer_id,

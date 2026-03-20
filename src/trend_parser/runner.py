@@ -33,6 +33,8 @@ class PipelineRunnerService:
         self,
         request: PipelineRunRequest,
         progress_callback: Callable[[dict], None] | None = None,
+        appearance_description: str | None = None,
+        content_description: str | None = None,
     ) -> tuple[PipelineRunOut, list[dict] | None]:
         """Run the full pipeline. Optionally report stage progress via *progress_callback*.
 
@@ -149,6 +151,8 @@ class PipelineRunnerService:
                 base_dir=base_dir,
                 enabled_platforms=enabled_platforms,
                 progress_report=_report,
+                appearance_description=appearance_description,
+                content_description=content_description,
             )
         elif request.review.auto:
             logger.warning("auto_review=True but VLM sync_folders=False or VLM disabled — skipping auto-review")
@@ -305,6 +309,8 @@ class PipelineRunnerService:
         base_dir: Path,
         enabled_platforms: list[str],
         progress_report: Callable[..., None] | None = None,
+        appearance_description: str | None = None,
+        content_description: str | None = None,
     ) -> list[dict]:
         """Run caption generation on VLM-selected videos for auto-review."""
 
@@ -342,6 +348,8 @@ class PipelineRunnerService:
                 api_key_env=request.review.api_key_env,
                 timeout_sec=request.review.timeout_sec,
                 has_lora=has_lora,
+                appearance_description=appearance_description,
+                content_description=content_description,
             )
         )
 

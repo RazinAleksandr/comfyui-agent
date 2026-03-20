@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api.deps import get_config, get_db, get_job_manager, get_seed_dir, get_store
+from trend_parser.config import GEMINI_DEFAULT_MODEL
 from trend_parser.filter import CandidateFilterConfig, run_candidate_filter
 from trend_parser.ingest import TrendIngestService
 from trend_parser.persona import PersonaProfile
@@ -48,7 +49,7 @@ class ReviewSubmission(BaseModel):
 class RerunVlmRequest(BaseModel):
     influencer_id: str
     theme: str = "influencer channel"
-    model: str = "gemini-2.5-flash"
+    model: str = GEMINI_DEFAULT_MODEL
     max_videos: int = Field(default=30, ge=1, le=200)
     thresholds: VlmThresholdsIn | None = None
     custom_persona_description: str | None = None
@@ -65,6 +66,13 @@ class PromoteVideoRequest(BaseModel):
     influencer_id: str
     file_name: str
     prompt: str
+
+
+class RegenerateCaptionRequest(BaseModel):
+    influencer_id: str
+    file_name: str
+    current_prompt: str
+    feedback: str
 
 
 # --- Routes ---
@@ -307,6 +315,123 @@ async def promote_video(run_id: str, body: PromoteVideoRequest) -> dict:
                 break
 
     return {"status": "promoted", "file_name": body.file_name}
+
+
+@router.post("/runs/{run_id}/regenerate-caption")
+async def regenerate_caption(run_id: str, body: RegenerateCaptionRequest) -> dict:
+    """Regenerate a video caption using Gemini with user feedback."""
+    import os
+    from trend_parser.gemini import call_gemini, sanitize_error_message
+
+    store = get_store()
+    run = store.load_pipeline_run(body.influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    # Find the video file
+    base_dir = run.get("base_dir", "")
+    video_path = None
+    for plat in run.get("platforms", []):
+        platform_name = plat.get("platform", "")
+        for sub in ["selected", "filtered", "downloads"]:
+            candidate = Path(base_dir) / platform_name / sub / body.file_name
+            if candidate.is_file():
+                video_path = candidate
+                break
+        if video_path:
+            break
+
+    if not video_path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Load appearance description
+    appearance_desc = None
+    try:
+        from api.deps import get_db_store
+        db_store = get_db_store()
+        inf_record = await db_store.load_influencer(body.influencer_id)
+        if inf_record:
+            appearance_desc = inf_record.get("appearance_description")
+    except Exception:
+        pass
+
+    appearance_block = f"\nThe person we are generating looks like this: {appearance_desc}" if appearance_desc else ""
+
+    # Check if this influencer has a LoRA configured
+    has_lora = False
+    try:
+        from comfy_pipeline.config import WorkflowConfig
+        wf_config = WorkflowConfig.from_yaml(
+            Path(__file__).resolve().parents[3] / "configs" / "wan_animate.yaml"
+        )
+        has_lora = wf_config.characters.get(body.influencer_id) is not None
+    except Exception:
+        pass
+
+    lora_instruction = (
+        'Start the caption with "sks woman" or "sks girl" as the very first words.'
+        if has_lora
+        else ""
+    )
+
+    prompt = f"""
+You are a video description expert for AI video generation prompts.
+{appearance_block}
+
+The current prompt for this video is:
+"{body.current_prompt}"
+
+The user wants changes: {body.feedback}
+
+Watch the video and rewrite the generation prompt incorporating the user's feedback.
+{"The caption MUST start with a brief description of the person's appearance (from the description above)." if appearance_desc else ""}
+Focus on: person's movements, gestures, body language, facial expressions, poses, and camera angle.
+Do NOT focus on background, environment, or clothing.
+{lora_instruction}
+
+Output format rules:
+- Return ONLY valid JSON
+- No markdown, no extra commentary
+- Use this exact schema:
+{{"caption": "your rewritten generation prompt here"}}
+""".strip()
+
+    try:
+        payload, _raw = await asyncio.to_thread(
+            call_gemini,
+            model=get_config().gemini_model,
+            api_key=api_key,
+            video_path=video_path,
+            prompt=prompt,
+            timeout_sec=120,
+            temperature=0.4,
+        )
+        caption = str(payload.get("caption", "")).strip()
+        if not caption:
+            raise ValueError("empty caption in response")
+
+        # Persist the new caption directly to the review_videos table
+        try:
+            db = get_db()
+            await db.execute(
+                "UPDATE review_videos SET prompt = ? "
+                "WHERE file_name = ? AND review_id IN ("
+                "  SELECT id FROM reviews WHERE run_id = ?"
+                ")",
+                [caption, body.file_name, run_id],
+            )
+        except Exception:
+            logger.warning("Failed to persist regenerated caption to DB", exc_info=True)
+
+        return {"caption": caption}
+    except Exception as exc:
+        safe_msg = sanitize_error_message(str(exc), api_key=api_key)
+        logger.error("Caption regeneration failed: %s", safe_msg)
+        raise HTTPException(status_code=502, detail=f"Gemini API error: {safe_msg}")
 
 
 # --- Helpers ---
@@ -641,6 +766,22 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
                         if isinstance(p, str) and Path(p).exists()
                     ]
 
+            # QA review data (always from DB)
+            qa_status = row.get("qa_status")
+            if qa_status:
+                entry["qa_status"] = qa_status
+                qa_result_json = row.get("qa_result_json")
+                if qa_result_json:
+                    try:
+                        entry["qa_result"] = json.loads(qa_result_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # Aligned reference image
+            aligned_path = row.get("aligned_image_path")
+            if aligned_path and Path(aligned_path).exists():
+                entry["aligned_image_url"] = _fs_to_url(aligned_path, data_dir)
+
             jobs_list.append(entry)
 
         return {"jobs": jobs_list}
@@ -682,10 +823,30 @@ async def _run_pipeline(body: PipelineRunRequest, progress_fn=None) -> dict:
     store = get_store()
     seed_dir = get_seed_dir()
     runner = PipelineRunnerService(config=config, store=store, seed_dir=seed_dir)
+
+    # Override Gemini model from config (yaml takes precedence over schema defaults)
+    body.vlm.model = config.gemini_model
+    body.review.model = config.gemini_model
+
+    # Load appearance/content descriptions from DB for caption generation
+    appearance_description = None
+    content_description = None
+    try:
+        from api.deps import get_db_store
+        db_store = get_db_store()
+        inf_record = await db_store.load_influencer(body.influencer_id)
+        if inf_record:
+            appearance_description = inf_record.get("appearance_description")
+            content_description = inf_record.get("description")
+    except Exception:
+        logger.debug("Failed to load influencer appearance from DB", exc_info=True)
+
     run_id = None
     try:
         result, auto_review_videos = await asyncio.to_thread(
             runner.run, body, progress_callback=progress_fn,
+            appearance_description=appearance_description,
+            content_description=content_description,
         )
         result_dict = result.model_dump(mode="json")
         run_id = Path(result.base_dir).name
@@ -776,6 +937,9 @@ async def _update_pipeline_run_status(
 
 
 async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict:
+    # Use Gemini model from config (yaml takes precedence over request default)
+    body.model = get_config().gemini_model
+
     store = get_store()
     influencer = store.load_influencer(body.influencer_id)
     if influencer is None:

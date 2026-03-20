@@ -7,6 +7,7 @@ export interface InfluencerOut {
   hashtags: string[] | null;
   video_suggestions_requirement: string | null;
   reference_image_path: string | null;
+  appearance_description: string | null;
   profile_image_url: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -17,6 +18,7 @@ export interface InfluencerUpsertRequest {
   description?: string;
   hashtags?: string[];
   video_suggestions_requirement?: string;
+  appearance_description?: string;
 }
 
 export interface JobInfo {
@@ -127,6 +129,15 @@ export interface GenerationOutput {
   name: string;
 }
 
+export interface QaResult {
+  verdict: string;
+  score: number;
+  issues: string[];
+  scores?: Record<string, number>;
+  summary?: string;
+  error?: string;
+}
+
 export interface GenerationJob {
   file_name: string;
   job_id: string;
@@ -135,6 +146,9 @@ export interface GenerationJob {
   progress?: Record<string, unknown>;
   error?: string;
   outputs?: GenerationOutput[];
+  qa_status?: string;
+  qa_result?: QaResult;
+  aligned_image_url?: string;
 }
 
 export interface GenerationData {
@@ -161,9 +175,6 @@ export interface PlatformPipelineConfig {
 
 export interface ReviewStageConfig {
   auto?: boolean;
-  model?: string;
-  api_key_env?: string;
-  timeout_sec?: number;
 }
 
 export interface PipelineRunRequest {
@@ -171,7 +182,7 @@ export interface PipelineRunRequest {
   platforms: Record<string, PlatformPipelineConfig>;
   download?: { enabled?: boolean; force?: boolean };
   filter?: { enabled?: boolean; top_k?: number; probe_seconds?: number; workers?: number };
-  vlm?: { enabled?: boolean; model?: string; max_videos?: number };
+  vlm?: { enabled?: boolean; max_videos?: number };
   review?: ReviewStageConfig;
 }
 
@@ -182,6 +193,7 @@ export interface GenerationRequest {
   reference_video?: string;
   prompt?: string;
   set_args?: Record<string, string>;
+  align_reference?: boolean;
 }
 
 export interface ServerStatus {

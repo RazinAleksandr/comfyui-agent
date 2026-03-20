@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.deps import get_db_store, get_store
+from api.deps import get_config, get_db_store, get_store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/influencers", tags=["influencers"])
 
@@ -20,6 +25,7 @@ class InfluencerUpsertRequest(BaseModel):
     hashtags: list[str] = Field(default_factory=list)
     video_suggestions_requirement: str | None = None
     reference_image_path: str | None = None
+    appearance_description: str | None = None
 
 
 class InfluencerOut(BaseModel):
@@ -29,6 +35,7 @@ class InfluencerOut(BaseModel):
     hashtags: list[str] | None = None
     video_suggestions_requirement: str | None = None
     reference_image_path: str | None = None
+    appearance_description: str | None = None
     profile_image_url: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -110,6 +117,57 @@ async def upload_reference_image(influencer_id: str, file: UploadFile) -> dict:
     return {"reference_image_path": rel_path}
 
 
+@router.post("/{influencer_id}/generate-appearance")
+async def generate_appearance(influencer_id: str) -> dict:
+    """Generate an appearance description from the reference image using Gemini."""
+    db_store = get_db_store()
+    record = await db_store.load_influencer(influencer_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    ref_path = record.get("reference_image_path")
+    if not ref_path:
+        raise HTTPException(status_code=400, detail="No reference image uploaded")
+
+    fs_store = get_store()
+    image_path = fs_store.data_dir / ref_path
+    if not image_path.is_file():
+        raise HTTPException(status_code=400, detail="Reference image file not found")
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    from trend_parser.gemini import call_gemini_image, sanitize_error_message
+
+    prompt = (
+        "Describe the person in this image in detail for use as a reference in AI video generation prompts. "
+        "Focus on:\n"
+        "- Physical appearance: hair color/style, skin tone, body type, approximate age\n"
+        "- Facial features: eye shape, face shape, distinctive features\n"
+        "- Makeup if visible\n\n"
+        "Write 2-4 sentences. Be specific and objective. "
+        "Do NOT describe clothing, accessories, background, setting, or mood — only the person's physical features."
+    )
+
+    try:
+        description = call_gemini_image(
+            model=get_config().gemini_model,
+            api_key=api_key,
+            image_path=image_path,
+            prompt=prompt,
+            timeout_sec=60,
+        )
+    except Exception as exc:
+        safe_msg = sanitize_error_message(str(exc), api_key=api_key)
+        logger.error("Gemini appearance generation failed: %s", safe_msg)
+        raise HTTPException(status_code=502, detail=f"Gemini API error: {safe_msg}")
+
+    description = description.strip()
+    await db_store.save_influencer(influencer_id, {"appearance_description": description})
+    return {"appearance_description": description}
+
+
 def _safe_extension(filename: str) -> str:
     """Extract file extension, default to .jpg."""
     if "." in filename:
@@ -135,6 +193,7 @@ def _dict_to_out(record: dict) -> InfluencerOut:
         hashtags=record.get("hashtags"),
         video_suggestions_requirement=record.get("video_suggestions_requirement"),
         reference_image_path=record.get("reference_image_path"),
+        appearance_description=record.get("appearance_description"),
         profile_image_url=profile_image_url,
         created_at=record.get("created_at"),
         updated_at=record.get("updated_at"),

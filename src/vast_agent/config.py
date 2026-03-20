@@ -23,6 +23,8 @@ class VastConfig:
     geolocation: str = "EU"
     extra_filters: dict = field(default_factory=dict)
     health_check_interval: int = 120  # seconds between background server health checks (0 = disabled)
+    search_retry_delay: int = 30  # seconds between offer search retries when no offers found
+    max_search_attempts: int = 20  # max search retries (~10 min at 30s interval)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> VastConfig:
@@ -44,4 +46,6 @@ class VastConfig:
             geolocation=data.get("geolocation", cls.geolocation),
             extra_filters=data.get("extra_filters", {}),
             health_check_interval=data.get("health_check_interval", cls.health_check_interval),
+            search_retry_delay=data.get("search_retry_delay", cls.search_retry_delay),
+            max_search_attempts=data.get("max_search_attempts", cls.max_search_attempts),
         )

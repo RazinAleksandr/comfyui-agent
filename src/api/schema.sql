@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS influencers (
     hashtags        TEXT,  -- JSON array stored as text
     video_suggestions_requirement TEXT,
     reference_image_path TEXT,
+    appearance_description TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -110,6 +111,9 @@ CREATE TABLE IF NOT EXISTS generation_jobs (
     error           TEXT,
     output_dir      TEXT,
     outputs_json    TEXT,
+    qa_status       TEXT,
+    qa_result_json  TEXT,
+    qa_completed_at TEXT,
     UNIQUE(run_id, file_name, job_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gen_jobs_run ON generation_jobs(run_id);

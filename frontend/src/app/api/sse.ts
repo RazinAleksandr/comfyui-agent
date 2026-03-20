@@ -25,7 +25,7 @@ function connect(): void {
   };
 
   // Listen for typed events from the backend
-  for (const eventType of ["job_progress", "job_state", "server_change"]) {
+  for (const eventType of ["job_progress", "job_state", "server_change", "qa_review"]) {
     eventSource.addEventListener(eventType, (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);

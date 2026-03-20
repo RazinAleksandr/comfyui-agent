@@ -52,7 +52,7 @@ class DBStore:
             # Update: merge provided fields with existing
             sets = ["updated_at = ?"]
             params: list[Any] = [now]
-            for field in ("name", "description", "hashtags", "video_suggestions_requirement", "reference_image_path"):
+            for field in ("name", "description", "hashtags", "video_suggestions_requirement", "reference_image_path", "appearance_description"):
                 if field in payload:
                     val = payload[field]
                     if field == "hashtags" and isinstance(val, list):
@@ -72,8 +72,8 @@ class DBStore:
             await self._db.execute(
                 "INSERT INTO influencers "
                 "(influencer_id, name, description, hashtags, video_suggestions_requirement, "
-                " reference_image_path, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " reference_image_path, appearance_description, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     influencer_id,
                     payload.get("name", "Influencer"),
@@ -81,6 +81,7 @@ class DBStore:
                     hashtags,
                     payload.get("video_suggestions_requirement"),
                     payload.get("reference_image_path"),
+                    payload.get("appearance_description"),
                     now,
                     now,
                 ],
@@ -203,6 +204,7 @@ class DBStore:
             "hashtags": hashtags or [],
             "video_suggestions_requirement": row.get("video_suggestions_requirement"),
             "reference_image_path": row.get("reference_image_path"),
+            "appearance_description": row.get("appearance_description"),
             "created_at": row.get("created_at"),
             "updated_at": row.get("updated_at"),
         }

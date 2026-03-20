@@ -42,6 +42,8 @@ SSH_POLL_TIMEOUT = 600
 INSTANCE_LOAD_TIMEOUT = 180
 MAX_RENT_ATTEMPTS = 5
 RENT_RETRY_DELAY = 30
+SEARCH_RETRY_DELAY = 30  # fallback; overridden by config.search_retry_delay
+MAX_SEARCH_ATTEMPTS = 20  # fallback; overridden by config.max_search_attempts
 
 
 class LoadTimeoutError(Exception):
@@ -189,11 +191,19 @@ class VastAgentService:
         config = self.config
         client = VastClient()
 
-        # Step 1: Rent instance
+        # Step 1: Search for offers (retry until found or timeout)
+        retry_delay = getattr(config, "search_retry_delay", SEARCH_RETRY_DELAY)
+        max_attempts = getattr(config, "max_search_attempts", MAX_SEARCH_ATTEMPTS)
         self._log(f"Searching for {config.gpu} instance...")
         offers = _search_offers(client, config)
+        search_attempt = 1
+        while not offers and search_attempt < max_attempts:
+            self._log(f"No offers found (attempt {search_attempt}/{max_attempts}). Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+            search_attempt += 1
+            offers = _search_offers(client, config)
         if not offers:
-            raise VastAPIError("No offers found matching criteria.")
+            raise VastAPIError(f"No offers found after {max_attempts} attempts (~{max_attempts * retry_delay // 60} min).")
 
         instance_id, instance = _rent_with_retry(
             client, config, offers, log=self._log
@@ -496,7 +506,12 @@ def _load_config(config_path: str | None = None) -> VastConfig:
 
 
 def _search_offers(client: VastClient, config: VastConfig) -> list[dict]:
-    return client.search_offers(
+    logger.info(
+        "Searching VastAI: gpu=%s min_ram=%sMB disk=%sGB max_price=$%.2f/hr geo=%s extra=%s",
+        config.gpu, config.min_gpu_ram, config.disk_space, config.max_price,
+        config.geolocation, config.extra_filters,
+    )
+    offers = client.search_offers(
         gpu_name=config.gpu,
         min_gpu_ram=config.min_gpu_ram,
         disk_space=config.disk_space,
@@ -505,6 +520,8 @@ def _search_offers(client: VastClient, config: VastConfig) -> list[dict]:
         extra_filters=config.extra_filters or None,
         max_bw_price=config.max_bw_price,
     )
+    logger.info("VastAI search returned %d offers", len(offers))
+    return offers
 
 
 def _wait_for_ssh(

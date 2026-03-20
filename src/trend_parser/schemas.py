@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from trend_parser.config import GEMINI_DEFAULT_MODEL
+
 
 class TrendSelectorIn(BaseModel):
     mode: str = "auto"
@@ -45,7 +47,7 @@ class VlmThresholdsIn(BaseModel):
 
 class VlmStageConfigIn(BaseModel):
     enabled: bool = True
-    model: str = "gemini-2.5-flash"
+    model: str = GEMINI_DEFAULT_MODEL
     api_key_env: str = "GEMINI_API_KEY"
     timeout_sec: int = Field(default=300, ge=30, le=3600)
     mock: bool = False
@@ -57,7 +59,7 @@ class VlmStageConfigIn(BaseModel):
 
 class ReviewStageConfigIn(BaseModel):
     auto: bool = False
-    model: str = "gemini-2.5-flash"
+    model: str = GEMINI_DEFAULT_MODEL
     api_key_env: str = "GEMINI_API_KEY"
     timeout_sec: int = Field(default=120, ge=30, le=600)
 

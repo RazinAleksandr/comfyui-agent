@@ -231,9 +231,20 @@ def rsync_push(
         "__pycache__",
         "*.egg-info",
         ".vast-instance.json",
+        ".vast-server-*",
         "output",
         ".claude",
         "AI_Influencer_studio",
+        # Large directories not needed on GPU server
+        "shared",
+        "frontend",
+        "frontend-dist",
+        "docs",
+        "node_modules",
+        "*.mp4",
+        "*.db",
+        "*.db-wal",
+        "*.db-shm",
     ]
     for pattern in excludes:
         cmd.extend(["--exclude", pattern])

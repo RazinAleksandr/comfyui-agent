@@ -7,6 +7,9 @@ from pathlib import Path
 import yaml
 
 
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+
+
 @dataclass
 class ParserConfig:
     """Parser configuration loaded from YAML with ${ENV_VAR} interpolation."""
@@ -49,6 +52,8 @@ class ParserConfig:
 
     # Gemini VLM
     gemini_api_key: str = ""
+    gemini_model: str = GEMINI_DEFAULT_MODEL
+    gemini_image_model: str = "gemini-3.1-flash-image-preview"
 
     # Directories — resolved relative to workspace_data_dir
     workspace_data_dir: str = ""

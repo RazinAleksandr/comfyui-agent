@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,9 +204,8 @@ def run_selector(config: SelectorRunConfig) -> int:
         f"[vlm] files={len(files)} model={config.model} mock={config.mock} output_dir={config.output_dir}",
         flush=True,
     )
-    decisions: list[VlmDecision] = []
 
-    for idx, video_path in enumerate(files, start=1):
+    def _score_one(idx: int, video_path: Path) -> VlmDecision:
         print(f"[{idx}/{len(files)}] {video_path.name}", flush=True)
         try:
             if config.mock:
@@ -249,17 +249,16 @@ def run_selector(config: SelectorRunConfig) -> int:
             }
             out_path.write_text(json.dumps(result_payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
-            decisions.append(
-                VlmDecision(
-                    file_name=video_path.name,
-                    source_path=str(video_path),
-                    decision=auto_decision,
-                    confidence=confidence,
-                    substitution_readiness=readiness,
-                    persona_fit=persona_fit_val,
-                    reasons=reasons,
-                    output_json_path=str(out_path),
-                )
+            print(f"  [{idx}/{len(files)}] {video_path.name} → {auto_decision}", flush=True)
+            return VlmDecision(
+                file_name=video_path.name,
+                source_path=str(video_path),
+                decision=auto_decision,
+                confidence=confidence,
+                substitution_readiness=readiness,
+                persona_fit=persona_fit_val,
+                reasons=reasons,
+                output_json_path=str(out_path),
             )
         except Exception as exc:
             safe_stem = sanitize_stem(video_path)
@@ -274,18 +273,27 @@ def run_selector(config: SelectorRunConfig) -> int:
                 "error": sanitize_error_message(str(exc), api_key=api_key),
             }
             out_path.write_text(json.dumps(err_payload, ensure_ascii=True, indent=2), encoding="utf-8")
-            decisions.append(
-                VlmDecision(
-                    file_name=video_path.name,
-                    source_path=str(video_path),
-                    decision="reject",
-                    confidence=0.0,
-                    substitution_readiness=0.0,
-                    persona_fit=0.0,
-                    reasons=["inference_error"],
-                    output_json_path=str(out_path),
-                )
+            print(f"  [{idx}/{len(files)}] {video_path.name} → error", flush=True)
+            return VlmDecision(
+                file_name=video_path.name,
+                source_path=str(video_path),
+                decision="reject",
+                confidence=0.0,
+                substitution_readiness=0.0,
+                persona_fit=0.0,
+                reasons=["inference_error"],
+                output_json_path=str(out_path),
             )
+
+    workers = min(5, len(files))
+    decisions: list[VlmDecision] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_score_one, idx, path): idx
+            for idx, path in enumerate(files, start=1)
+        }
+        for future in as_completed(futures):
+            decisions.append(future.result())
 
     if config.sync_folders:
         copy_results(decisions=decisions, selected_dir=config.selected_dir, rejected_dir=config.rejected_dir)

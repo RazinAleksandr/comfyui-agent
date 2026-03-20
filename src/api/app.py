@@ -19,6 +19,7 @@ from api.routes import events, generation, health, influencers, jobs, parser
 from trend_parser.config import ParserConfig
 from trend_parser.store import FilesystemStore
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -79,6 +80,19 @@ def create_app(
         # 1. Connect DB and apply schema
         await db.connect()
         await db.apply_schema()
+
+        # 1b. Incremental schema migrations (new columns on existing tables)
+        for alter_sql in [
+            "ALTER TABLE influencers ADD COLUMN appearance_description TEXT",
+            "ALTER TABLE generation_jobs ADD COLUMN qa_status TEXT",
+            "ALTER TABLE generation_jobs ADD COLUMN qa_result_json TEXT",
+            "ALTER TABLE generation_jobs ADD COLUMN qa_completed_at TEXT",
+            "ALTER TABLE generation_jobs ADD COLUMN aligned_image_path TEXT",
+        ]:
+            try:
+                await db.execute(alter_sql)
+            except Exception:
+                pass  # column already exists
 
         # 2. Run filesystem migration if DB is empty
         try:
