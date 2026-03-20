@@ -10,10 +10,6 @@ build/
 .venv/
 venv/
 
-# ComfyUI (large, cloned on server)
-ComfyUI/
-AI_Influencer_studio/
-
 # IDE
 .vscode/
 .idea/
@@ -37,10 +33,9 @@ output/
 .vast-instance.json
 .vast-*
 
-# Telegram bot data
-*.session
 # frontend/
 shared/
-check
 
+# ai agents
 .claude/
+figma/

@@ -220,9 +220,10 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
             continue
 
         # Pick best output: last existing file (postprocessed is appended last)
+        from api.path_utils import to_absolute
         video_path = None
         for p in reversed(raw_outputs):
-            if isinstance(p, str) and Path(p).is_file():
+            if isinstance(p, str) and to_absolute(p, data_dir).is_file():
                 video_path = p
                 break
         if not video_path:
@@ -251,10 +252,14 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
     return result
 
 
-def _path_to_url(abs_path: str, data_dir: Path) -> str:
-    """Convert a filesystem path to a /files/ URL."""
+def _path_to_url(stored_path: str, data_dir: Path) -> str:
+    """Convert a stored (absolute or relative) path to a /files/ URL."""
+    if not stored_path:
+        return ""
     try:
-        rel = Path(abs_path).relative_to(data_dir)
+        from api.path_utils import to_absolute
+        abs_path = to_absolute(stored_path, data_dir)
+        rel = abs_path.relative_to(data_dir)
         return f"/files/{rel}"
     except ValueError:
         return ""

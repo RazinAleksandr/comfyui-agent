@@ -226,14 +226,16 @@ async def align_reference_image(
     try:
         result = await asyncio.to_thread(_do_align)
 
-        # Persist aligned image path to DB
+        # Persist aligned image path to DB (stored as relative)
         if job_id:
             try:
-                from api.deps import get_db
+                from api.deps import get_db, get_store
+                from api.path_utils import to_relative
                 db = get_db()
+                rel_path = to_relative(result, get_store().data_dir)
                 await db.execute(
                     "UPDATE generation_jobs SET aligned_image_path = ? WHERE job_id = ?",
-                    [result, job_id],
+                    [rel_path, job_id],
                 )
             except Exception:
                 logger.warning("Failed to save aligned_image_path to DB", exc_info=True)

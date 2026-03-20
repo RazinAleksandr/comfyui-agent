@@ -104,6 +104,13 @@ def create_app(
         except Exception:
             logger.warning("Filesystem migration failed", exc_info=True)
 
+        # 2b. Migrate absolute paths to relative (one-time, idempotent)
+        try:
+            from api.migrate_paths import migrate_paths_to_relative
+            await migrate_paths_to_relative(db, data_dir)
+        except Exception:
+            logger.warning("Path migration failed", exc_info=True)
+
         # 3. Recover orphaned jobs from previous run
         try:
             from api.deps import get_job_manager

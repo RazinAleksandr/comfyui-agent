@@ -178,12 +178,14 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
 
     # For approved videos not yet in selected/, copy from rejected/filtered/downloads/
     # (handles the case where the user promoted a VLM-rejected video via review UI)
-    base_dir = run.get("base_dir", "")
+    from api.path_utils import to_absolute
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, store.data_dir) if raw_base else None
     approved_names = {v.file_name for v in body.videos if v.approved}
-    if approved_names and base_dir:
+    if approved_names and abs_base_dir:
         for plat in run.get("platforms", []):
             platform_name = plat.get("platform", "")
-            plat_dir = Path(base_dir) / platform_name
+            plat_dir = abs_base_dir / platform_name
             sel_dir = plat_dir / "selected"
             for file_name in approved_names:
                 if (sel_dir / file_name).exists():
@@ -300,10 +302,12 @@ async def promote_video(run_id: str, body: PromoteVideoRequest) -> dict:
     )
 
     # Copy the video file into selected/ so generation can find it
-    base_dir = run.get("base_dir", "")
+    from api.path_utils import to_absolute
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, store.data_dir) if raw_base else None
     for plat in run.get("platforms", []):
         platform_name = plat.get("platform", "")
-        plat_dir = Path(base_dir) / platform_name
+        plat_dir = abs_base_dir / platform_name if abs_base_dir else Path(raw_base) / platform_name
         for search_dir in [plat_dir / "rejected", plat_dir / "filtered", plat_dir / "downloads"]:
             src = search_dir / body.file_name
             if src.is_file():
@@ -333,12 +337,14 @@ async def regenerate_caption(run_id: str, body: RegenerateCaptionRequest) -> dic
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     # Find the video file
-    base_dir = run.get("base_dir", "")
+    from api.path_utils import to_absolute
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, store.data_dir) if raw_base else None
     video_path = None
     for plat in run.get("platforms", []):
         platform_name = plat.get("platform", "")
         for sub in ["selected", "filtered", "downloads"]:
-            candidate = Path(base_dir) / platform_name / sub / body.file_name
+            candidate = abs_base_dir / platform_name / sub / body.file_name if abs_base_dir else Path(raw_base) / platform_name / sub / body.file_name
             if candidate.is_file():
                 video_path = candidate
                 break
@@ -467,22 +473,29 @@ async def _ensure_run_in_db(run: dict[str, Any]) -> None:
             "VALUES (?, 'Influencer', ?, ?)",
             [influencer_id, _now(), _now()],
         )
+    from api.path_utils import to_relative
+    raw_base = run.get("base_dir", "")
+    rel_base = to_relative(raw_base, get_store().data_dir) if raw_base else ""
     await db.execute(
         "INSERT OR IGNORE INTO pipeline_runs "
         "(run_id, influencer_id, started_at, base_dir, status, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, 'running', ?, ?)",
         [run_id, influencer_id, run.get("started_at", _now()),
-         run.get("base_dir", ""), _now(), _now()],
+         rel_base, _now(), _now()],
     )
 
 
-def _fs_to_url(abs_path: str, data_dir: Path) -> str:
-    """Convert an absolute filesystem path to a /files/ URL."""
+def _fs_to_url(stored_path: str, data_dir: Path) -> str:
+    """Convert a stored (absolute or relative) path to a /files/ URL."""
+    if not stored_path:
+        return ""
     try:
-        rel = Path(abs_path).relative_to(data_dir)
+        from api.path_utils import to_absolute
+        abs_path = to_absolute(stored_path, data_dir)
+        rel = abs_path.relative_to(data_dir)
         return f"/files/{rel}"
     except ValueError:
-        logger.warning("Path outside data_dir, refusing to expose: %s", abs_path)
+        logger.warning("Path outside data_dir, refusing to expose: %s", stored_path)
         return ""
 
 
@@ -490,7 +503,8 @@ def _list_videos(directory: str | None, data_dir: Path) -> list[dict[str, str]]:
     """List video files in a directory, returning name + URL."""
     if not directory:
         return []
-    d = Path(directory)
+    from api.path_utils import to_absolute
+    d = to_absolute(directory, data_dir)
     if not d.is_dir():
         return []
     videos = []
@@ -503,10 +517,11 @@ def _list_videos(directory: str | None, data_dir: Path) -> list[dict[str, str]]:
     return videos
 
 
-def _load_json(path: str | None) -> dict[str, Any] | None:
+def _load_json(path: str | None, data_dir: Path) -> dict[str, Any] | None:
     if not path:
         return None
-    p = Path(path)
+    from api.path_utils import to_absolute
+    p = to_absolute(path, data_dir)
     if not p.is_file():
         return None
     try:
@@ -516,11 +531,12 @@ def _load_json(path: str | None) -> dict[str, Any] | None:
         return None
 
 
-def _load_vlm_video_details(vlm_dir: str | None) -> list[dict[str, Any]]:
+def _load_vlm_video_details(vlm_dir: str | None, data_dir: Path) -> list[dict[str, Any]]:
     """Load per-video VLM JSON files from the vlm/ directory."""
     if not vlm_dir:
         return []
-    d = Path(vlm_dir)
+    from api.path_utils import to_absolute
+    d = to_absolute(vlm_dir, data_dir)
     if not d.is_dir():
         return []
     results = []
@@ -547,13 +563,16 @@ def _load_vlm_video_details(vlm_dir: str | None) -> list[dict[str, Any]]:
 
 async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Enrich a pipeline run manifest with video lists and sub-report data."""
+    from api.path_utils import to_absolute
+
     # Ensure this run exists in DB (pipeline runner only writes filesystem)
     await _ensure_run_in_db(run)
 
-    base_dir = run.get("base_dir", "")
+    raw_base_dir = run.get("base_dir", "")
     run_id = run.get("run_id", "")
+    abs_base_dir = to_absolute(raw_base_dir, data_dir) if raw_base_dir else None
 
-    if base_dir:
+    if abs_base_dir:
         # Load review from DB
         review = await _load_review_from_db(run_id)
         if review:
@@ -565,9 +584,8 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
             run["generation"] = gen_data
 
     for plat in run.get("platforms", []):
-        base_dir = run.get("base_dir", "")
         platform_name = plat.get("platform", "")
-        plat_dir = Path(base_dir) / platform_name if base_dir else None
+        plat_dir = abs_base_dir / platform_name if abs_base_dir else None
 
         # Downloads — new runs store directly in downloads/, old runs in downloads/{platform}/
         download_dir = str(plat_dir / "downloads") if plat_dir else None
@@ -587,7 +605,7 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         plat["selected_videos"] = _list_videos(plat.get("selected_dir"), data_dir)
 
         # Candidate filter report
-        report = _load_json(plat.get("candidate_report_path"))
+        report = _load_json(plat.get("candidate_report_path"), data_dir)
         if report:
             plat["filter_report"] = {
                 "total_candidates": report.get("total_candidates"),
@@ -618,7 +636,7 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
             }
 
         # VLM summary
-        vlm = _load_json(plat.get("vlm_summary_path"))
+        vlm = _load_json(plat.get("vlm_summary_path"), data_dir)
         if vlm:
             plat["vlm_report"] = {
                 "model": vlm.get("model"),
@@ -639,7 +657,7 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
 
         # VLM per-video details (accepted + rejected with scores)
         vlm_dir_path = str(plat_dir / "vlm") if plat_dir else None
-        plat["vlm_video_details"] = _load_vlm_video_details(vlm_dir_path)
+        plat["vlm_video_details"] = _load_vlm_video_details(vlm_dir_path, data_dir)
 
         # Rejected videos (VLM-rejected)
         rejected_dir = str(plat_dir / "rejected") if plat_dir else None
@@ -647,7 +665,7 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
 
         # Platform manifest (ingested items with URLs, captions, views)
         pm_path = str(plat_dir / "platform_manifest.json") if plat_dir else None
-        pm = _load_json(pm_path)
+        pm = _load_json(pm_path, data_dir)
         if pm:
             plat["ingested_details"] = [
                 {
@@ -695,6 +713,8 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
     if not run_id:
         return None
     try:
+        from api.path_utils import to_absolute
+
         db = get_db()
         rows = await db.fetchall(
             "SELECT gj.*, j.status as job_status, j.progress_json, j.error as job_error, "
@@ -730,11 +750,15 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
                 if live_info.status == "completed" and live_info.result:
                     result = live_info.result
                     if isinstance(result, dict):
-                        entry["outputs"] = [
-                            {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                            for p in result.get("outputs", [])
-                            if Path(p).exists()
-                        ]
+                        entry["outputs"] = []
+                        for p in result.get("outputs", []):
+                            abs_p = to_absolute(p, data_dir)
+                            if abs_p.exists():
+                                entry["outputs"].append({
+                                    "path": p,
+                                    "url": _fs_to_url(str(abs_p), data_dir),
+                                    "name": abs_p.parent.name,
+                                })
             else:
                 # Use DB data
                 entry["status"] = row.get("job_status") or row.get("status", "unknown")
@@ -760,11 +784,17 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
                     except (json.JSONDecodeError, TypeError):
                         pass
                 if raw_outputs:
-                    entry["outputs"] = [
-                        {"path": p, "url": _fs_to_url(p, data_dir), "name": Path(p).parent.name}
-                        for p in raw_outputs
-                        if isinstance(p, str) and Path(p).exists()
-                    ]
+                    entry["outputs"] = []
+                    for p in raw_outputs:
+                        if not isinstance(p, str):
+                            continue
+                        abs_p = to_absolute(p, data_dir)
+                        if abs_p.exists():
+                            entry["outputs"].append({
+                                "path": p,
+                                "url": _fs_to_url(str(abs_p), data_dir),
+                                "name": abs_p.parent.name,
+                            })
 
             # QA review data (always from DB)
             qa_status = row.get("qa_status")
@@ -779,8 +809,10 @@ async def _load_generation_from_db(run_id: str, data_dir: Path) -> dict | None:
 
             # Aligned reference image
             aligned_path = row.get("aligned_image_path")
-            if aligned_path and Path(aligned_path).exists():
-                entry["aligned_image_url"] = _fs_to_url(aligned_path, data_dir)
+            if aligned_path:
+                abs_aligned = to_absolute(aligned_path, data_dir)
+                if abs_aligned.exists():
+                    entry["aligned_image_url"] = _fs_to_url(str(abs_aligned), data_dir)
 
             jobs_list.append(entry)
 
@@ -966,11 +998,13 @@ async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict
     )
 
     thresholds = body.thresholds
-    base_dir = run.get("base_dir", "")
+    from api.path_utils import to_absolute
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, get_store().data_dir) if raw_base else None
 
     for plat in run.get("platforms", []):
         platform_name = plat.get("platform", "")
-        plat_dir = Path(base_dir) / platform_name
+        plat_dir = abs_base_dir / platform_name if abs_base_dir else Path(raw_base) / platform_name
         filtered_dir = plat_dir / "filtered"
         vlm_dir = plat_dir / "vlm"
         selected_dir = plat_dir / "selected"
@@ -1031,11 +1065,13 @@ async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict
 
 
 async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -> dict:
-    base_dir = run.get("base_dir", "")
+    from api.path_utils import to_absolute
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, get_store().data_dir) if raw_base else None
 
     for plat in run.get("platforms", []):
         platform_name = plat.get("platform", "")
-        plat_dir = Path(base_dir) / platform_name
+        plat_dir = abs_base_dir / platform_name if abs_base_dir else Path(raw_base) / platform_name
         download_dir = plat_dir / "downloads"
         analysis_dir = plat_dir / "analysis"
         filtered_dir = plat_dir / "filtered"

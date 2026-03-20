@@ -87,7 +87,7 @@ async def migrate_filesystem_to_db(db: Database, data_dir: Path, project_root: P
                     run_id,
                     influencer_id,
                     data.get("started_at", _now()),
-                    str(manifest_path.parent),
+                    str(manifest_path.parent.relative_to(data_dir)),
                     json.dumps(data.get("request")) if data.get("request") else None,
                     "completed",  # Existing runs are assumed completed
                     data.get("started_at", _now()),

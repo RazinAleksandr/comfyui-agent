@@ -98,7 +98,7 @@ class PipelineRunnerService:
                 {
                     "influencer_id": request.influencer_id,
                     "started_at": started_at.isoformat(),
-                    "base_dir": str(base_dir.resolve()),
+                    "base_dir": str(base_dir.resolve().relative_to(self.store.data_dir)),
                     "platforms": [item.model_dump(mode="json") for item in platform_outputs],
                     "request": request.model_dump(mode="json"),
                 },
@@ -160,7 +160,7 @@ class PipelineRunnerService:
         result = PipelineRunOut(
             influencer_id=request.influencer_id,
             started_at=started_at,
-            base_dir=str(base_dir.resolve()),
+            base_dir=str(base_dir.resolve().relative_to(self.store.data_dir)),
             platforms=platform_outputs,
         )
         return result, auto_review_videos
@@ -228,7 +228,7 @@ class PipelineRunnerService:
                         sync_filtered=True,
                     )
                 )
-                candidate_report_path = str(report_path.resolve())
+                candidate_report_path = str(report_path.resolve().relative_to(self.store.data_dir))
                 filter_accepted = report.get("accepted", 0) if isinstance(report, dict) else 0
             except RuntimeError:
                 pass  # no videos to filter — continue gracefully
@@ -269,7 +269,7 @@ class PipelineRunnerService:
                 payload = json.loads(summary_file.read_text(encoding="utf-8"))
                 accepted = int(payload.get("accepted", 0))
                 rejected = int(payload.get("rejected", 0))
-                vlm_summary_path = str(summary_file.resolve())
+                vlm_summary_path = str(summary_file.resolve().relative_to(self.store.data_dir))
             _report("vlm", "completed", items=accepted or 0)
 
         manifest_payload = {
@@ -280,7 +280,7 @@ class PipelineRunnerService:
             "download_records": download_records,
             "candidate_report_path": candidate_report_path,
             "vlm_summary_path": vlm_summary_path,
-            "selected_dir": str(selected_dir.resolve()) if selected_dir.exists() else None,
+            "selected_dir": str(selected_dir.resolve().relative_to(self.store.data_dir)) if selected_dir.exists() else None,
             "accepted": accepted,
             "rejected": rejected,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -295,9 +295,9 @@ class PipelineRunnerService:
             ingested_items=len(videos),
             download_counts=download_counts,
             candidate_report_path=candidate_report_path,
-            filtered_dir=str(filtered_dir.resolve()) if request.filter.enabled else None,
+            filtered_dir=str(filtered_dir.resolve().relative_to(self.store.data_dir)) if request.filter.enabled else None,
             vlm_summary_path=vlm_summary_path,
-            selected_dir=str(selected_dir.resolve()) if request.vlm.enabled else None,
+            selected_dir=str(selected_dir.resolve().relative_to(self.store.data_dir)) if request.vlm.enabled else None,
             accepted=accepted,
             rejected=rejected,
         )

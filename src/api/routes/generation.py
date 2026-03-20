@@ -36,10 +36,13 @@ async def _save_generation_job(
     Replaces the old filesystem-based generation_manifest.json approach.
     Atomic — no race conditions from concurrent writes.
     """
+    from api.path_utils import to_relative
+
     db = get_db()
+    data_dir = get_store().data_dir
     video_p = Path(reference_video)
 
-    # Determine run_id from the video path
+    # Determine run_id from the video path (needs absolute path)
     run_id = _resolve_run_id(video_p)
     if not run_id:
         logger.warning("Could not resolve run_id for %s", reference_video)
@@ -62,7 +65,7 @@ async def _save_generation_job(
     now = datetime.now(UTC).isoformat()
     output_dir = None
     if video_p.parent.name == "selected":
-        output_dir = str(video_p.parent.parent / "generated")
+        output_dir = to_relative(str(video_p.parent.parent / "generated"), data_dir)
 
     await db.execute(
         "INSERT OR IGNORE INTO generation_jobs "
@@ -72,9 +75,10 @@ async def _save_generation_job(
     )
 
     # Also store run_id on the job itself for easy lookup
+    ref_video_rel = to_relative(reference_video, data_dir)
     await db.execute(
         "UPDATE jobs SET run_id = ?, reference_video = ? WHERE job_id = ?",
-        [run_id, reference_video, job_id],
+        [run_id, ref_video_rel, job_id],
     )
 
 
@@ -341,10 +345,18 @@ async def list_generation_jobs(run_id: str) -> list[dict]:
 @router.post("/run")
 async def start_generation(body: GenerationRequest) -> dict:
     """Start a generation job. Returns job_id for polling."""
+    from api.path_utils import to_absolute
+
     store = get_store()
+    data_dir = store.data_dir
     influencer = store.load_influencer(body.influencer_id)
     if influencer is None:
         raise HTTPException(status_code=404, detail="Influencer not found")
+
+    # Resolve stored paths to absolute for filesystem operations
+    reference_video = body.reference_video or ""
+    if reference_video:
+        reference_video = str(to_absolute(reference_video, data_dir))
 
     # Allocate server for this influencer
     manager = get_server_manager()
@@ -372,16 +384,16 @@ async def start_generation(body: GenerationRequest) -> dict:
     # Resolve output_dir: if reference_video is inside a pipeline run, put output
     # in a sibling "generated/" folder next to "selected/".
     output_dir = body.output_dir
-    if not output_dir and body.reference_video:
-        video_p = Path(body.reference_video)
+    if not output_dir and reference_video:
+        video_p = Path(reference_video)
         if video_p.parent.name == "selected":
             output_dir = str(video_p.parent.parent / "generated")
     if not output_dir:
-        output_dir = str(PROJECT_ROOT / "output")
+        output_dir = str(data_dir / "output")
 
     # Check for active generation for this video before submitting
-    if body.reference_video:
-        video_p = Path(body.reference_video)
+    if reference_video:
+        video_p = Path(reference_video)
         run_id = _resolve_run_id(video_p)
         if run_id:
             db = get_db()
@@ -404,7 +416,7 @@ async def start_generation(body: GenerationRequest) -> dict:
         {"type": "generation", "influencer_id": body.influencer_id, "server_id": server_id},
         workflow=body.workflow,
         image_path=image_path or "",
-        video_path=body.reference_video or "",
+        video_path=reference_video,
         prompt=body.prompt,
         output_dir=output_dir,
         set_args=body.set_args,
@@ -415,10 +427,10 @@ async def start_generation(body: GenerationRequest) -> dict:
     )
 
     # Persist job to generation_jobs table
-    if body.reference_video:
+    if reference_video:
         try:
             await _save_generation_job(
-                body.reference_video, job_id, server_id, body.influencer_id
+                reference_video, job_id, server_id, body.influencer_id
             )
         except Exception:
             logger.warning("Failed to save generation job to DB", exc_info=True)
@@ -495,6 +507,19 @@ async def _do_generation(
     job_id: str | None = None,
 ) -> dict:
     """Run generation via VastAgentService."""
+    from api.path_utils import to_absolute, to_relative
+
+    store = get_store()
+    data_dir = store.data_dir
+
+    # Resolve stored paths to absolute for filesystem operations
+    if image_path:
+        image_path = str(to_absolute(image_path, data_dir))
+    if video_path:
+        video_path = str(to_absolute(video_path, data_dir))
+    if output_dir:
+        output_dir = str(to_absolute(output_dir, data_dir))
+
     manager = get_server_manager()
     svc = manager.get_or_create_service(server_id)
     server_lock = manager.get_server_lock(server_id)
@@ -617,13 +642,17 @@ async def _do_generation(
     except Exception:
         logger.warning("Postprocessing failed", exc_info=True)
 
+    # Convert to relative for storage
+    rel_outputs = [to_relative(p, data_dir) for p in outputs]
+    rel_output_dir = to_relative(result.output_dir, data_dir)
+
     if job_id:
         try:
-            await _update_generation_job_complete(job_id, outputs, result.output_dir)
+            await _update_generation_job_complete(job_id, rel_outputs, rel_output_dir)
         except Exception:
             logger.warning("Failed to update generation_jobs on completion", exc_info=True)
 
-        # Fire QA review in background (non-blocking)
+        # Fire QA review in background (non-blocking, uses absolute paths)
         try:
             from api.qa_review import run_qa_review
 
@@ -647,6 +676,6 @@ async def _do_generation(
         "influencer_id": influencer_id,
         "server_id": server_id,
         "workflow": workflow,
-        "outputs": outputs,
-        "output_dir": result.output_dir,
+        "outputs": rel_outputs,
+        "output_dir": rel_output_dir,
     }
