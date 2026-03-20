@@ -42,3 +42,5 @@ output/
 # frontend/
 shared/
 check
+
+.claude/

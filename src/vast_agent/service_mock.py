@@ -45,7 +45,7 @@ class VastAgentServiceMock:
             actual_status="running" if self._running else None,
             dph_total=_MOCK_DPH if self._running else None,
             ssh_reachable=self._running,
-            label="mock-comfyui-agent",
+            label="mock-avatar-factory",
         )
 
     def up(self, workflow: str) -> ServerStatus:

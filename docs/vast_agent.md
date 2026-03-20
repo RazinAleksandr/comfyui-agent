@@ -70,7 +70,7 @@ Run any command on the remote server.
 
 ```bash
 vast-agent exec "nvidia-smi"
-vast-agent exec "cd /workspace/comfyui-agent && source .venv/bin/activate && comfy-pipeline list"
+vast-agent exec "cd /workspace/avatar-factory && source .venv/bin/activate && comfy-pipeline list"
 ```
 
 ### `vast-agent pull [path]`
@@ -149,8 +149,8 @@ min_gpu_ram: 32000           # Minimum VRAM in MB
 disk_space: 150              # Disk in GB
 max_price: 0.50              # Max $/hr
 image: pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
-remote_path: /workspace/comfyui-agent
-label: comfyui-agent
+remote_path: /workspace/avatar-factory
+label: avatar-factory
 ssh_key: ~/.ssh/id_rsa       # must match key registered on VastAI
 ```
 

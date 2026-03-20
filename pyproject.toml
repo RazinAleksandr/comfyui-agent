@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-agent"
+name = "avatar-factory"
 version = "0.1.0"
 description = "AI Influencer Studio — unified backend for trend parsing, video generation, and bot"
 requires-python = ">=3.10"

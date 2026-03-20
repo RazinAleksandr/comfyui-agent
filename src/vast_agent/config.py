@@ -16,8 +16,8 @@ class VastConfig:
     max_price: float = 0.50  # $/hr
     max_bw_price: float = 0.0  # $/GB download; 0 = no limit
     image: str = "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel"
-    remote_path: str = "/workspace/comfyui-agent"
-    label: str = "comfyui-agent"
+    remote_path: str = "/workspace/avatar-factory"
+    label: str = "avatar-factory"
     ssh_key: str = "~/.ssh/id_rsa"
     onstart: str = ""
     geolocation: str = "EU"

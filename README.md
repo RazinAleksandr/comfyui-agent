@@ -25,8 +25,8 @@ FastAPI API (port 8000)
 ### 1. Clone and install
 
 ```bash
-git clone git@github.com:RazinAleksandr/comfyui-agent.git
-cd comfyui-agent
+git clone git@github.com:RazinAleksandr/avatar-factory.git
+cd avatar-factory
 ./bootstrap.sh
 source .venv/bin/activate
 ```
@@ -189,8 +189,8 @@ If you already have a GPU server, use `comfy-pipeline` directly — see [docs/pi
 For running 24/7 on a VPS ($5/mo):
 
 ```bash
-git clone git@github.com:RazinAleksandr/comfyui-agent.git
-cd comfyui-agent
+git clone git@github.com:RazinAleksandr/avatar-factory.git
+cd avatar-factory
 ./bootstrap.sh
 source .venv/bin/activate
 cp .env.example .env
@@ -209,8 +209,8 @@ After=network.target
 [Service]
 Type=simple
 User=your_user
-WorkingDirectory=/path/to/comfyui-agent
-ExecStart=/path/to/comfyui-agent/.venv/bin/comfy-api --host 0.0.0.0 --port 8000
+WorkingDirectory=/path/to/avatar-factory
+ExecStart=/path/to/avatar-factory/.venv/bin/comfy-api --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
 
@@ -228,8 +228,8 @@ Wants=comfy-api.service
 [Service]
 Type=simple
 User=your_user
-WorkingDirectory=/path/to/comfyui-agent
-ExecStart=/path/to/comfyui-agent/.venv/bin/comfy-bot
+WorkingDirectory=/path/to/avatar-factory
+ExecStart=/path/to/avatar-factory/.venv/bin/comfy-bot
 Restart=always
 RestartSec=10
 

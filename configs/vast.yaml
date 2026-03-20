@@ -4,8 +4,8 @@ disk_space: 100 # GB
 max_price: 0.45 # $/hr
 max_bw_price: 0.0010 # $/GB download; filters out expensive bandwidth hosts ($10/TB ceiling)
 image: vastai/comfy:v0.16.4-cuda-12.9-py312
-remote_path: /workspace/comfyui-agent
-label: comfyui-agent
+remote_path: /workspace/avatar-factory
+label: avatar-factory
 ssh_key: ~/.ssh/id_ed25519
 geolocation: "" # "worldwide" # empty = worldwide EU - europe
 health_check_interval: 120 # seconds between background server health checks (0 = disabled)
