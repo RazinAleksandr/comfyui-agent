@@ -28,7 +28,7 @@ export default function HomePage() {
   const { user, logout } = useAuth();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
       <div className="container mx-auto px-4 py-8">
         <div className="absolute top-4 right-4 flex items-center gap-2">
           <span className="text-sm text-slate-500">{user?.display_name}</span>
@@ -71,9 +71,9 @@ export default function HomePage() {
                 <Link
                   key={influencer.influencer_id}
                   to={`/avatar/${influencer.influencer_id}`}
-                  className="group"
+                  className="group h-full"
                 >
-                  <Card className="overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1">
+                  <Card className="overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 h-full">
                     <div className="aspect-square overflow-hidden bg-gradient-to-br from-purple-100 to-pink-100">
                       <ImageWithFallback
                         src={influencer.profile_image_url ?? ""}
@@ -113,7 +113,7 @@ export default function HomePage() {
           {/* Create New Influencer Card */}
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Card className="overflow-hidden border-dashed border-2 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 flex items-center justify-center min-h-[400px]">
+              <Card className="overflow-hidden border-dashed border-2 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 flex items-center justify-center h-full">
                 <CardContent className="text-center py-8">
                   <div className="w-16 h-16 rounded-full bg-purple-100 flex items-center justify-center mx-auto mb-4">
                     <Plus className="w-8 h-8 text-purple-600" />

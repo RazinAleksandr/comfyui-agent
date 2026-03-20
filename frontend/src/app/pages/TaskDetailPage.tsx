@@ -158,6 +158,34 @@ function VideoPlayerModal({
   );
 }
 
+function ImagePreviewModal({
+  url,
+  title,
+  open,
+  onClose,
+}: {
+  url: string;
+  title: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Image Preview</DialogTitle>
+          <DialogDescription className="font-mono text-xs truncate">{title}</DialogDescription>
+        </DialogHeader>
+        <img
+          src={url}
+          alt={title}
+          className="w-full max-h-[80vh] rounded-lg object-contain bg-black"
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MediaThumb({ src, alt, className }: { src: string; alt: string; className?: string }) {
   if (!src) {
     return (
@@ -1875,6 +1903,7 @@ function GenerationPanel({
   onJobStarted,
   existingJobs,
   onPlayVideo,
+  onPreviewImage,
 }: {
   reviewVideos: ReviewVideo[];
   influencerId: string;
@@ -1882,6 +1911,7 @@ function GenerationPanel({
   onJobStarted: () => void;
   existingJobs?: GenerationJob[];
   onPlayVideo?: (url: string, title: string) => void;
+  onPreviewImage?: (url: string, title: string) => void;
 }) {
   const [serverState, setServerState] = useState<"unknown" | "checking" | "offline" | "starting" | "running">("unknown");
   const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
@@ -2181,7 +2211,8 @@ function GenerationPanel({
                         <img
                           src={existingJob.aligned_image_url}
                           alt="Aligned reference"
-                          className="w-10 h-14 rounded border border-slate-200 object-cover"
+                          className="w-10 h-14 rounded border border-slate-200 object-cover cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all"
+                          onClick={() => onPreviewImage?.(existingJob.aligned_image_url!, `Aligned reference — ${video.file_name}`)}
                         />
                       </div>
                     )}
@@ -2339,6 +2370,7 @@ export default function TaskDetailPage() {
   }, [refetchTask, refetchRaw]);
 
   const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [showVlmRerunDialog, setShowVlmRerunDialog] = useState(false);
   const [showFilterRerunDialog, setShowFilterRerunDialog] = useState(false);
   const [rerunJobId, setRerunJobId] = useState<string | null>(null);
@@ -2360,7 +2392,7 @@ export default function TaskDetailPage() {
 
   if (loadingTask || loadingInf) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
         <div className="container mx-auto px-4 py-8 max-w-6xl">
           <Skeleton className="h-8 w-40 mb-6" />
           <Card className="mb-8">
@@ -2408,7 +2440,7 @@ export default function TaskDetailPage() {
   const progressPercentage = (completedStages / totalStages) * 100;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 overflow-x-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60 overflow-x-hidden">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         <Link to={`/avatar/${influencer.influencer_id}`}>
           <Button variant="ghost" className="mb-6">
@@ -2638,6 +2670,7 @@ export default function TaskDetailPage() {
                         onJobStarted={refetchAll}
                         existingJobs={rawRun?.generation?.jobs}
                         onPlayVideo={handlePlayVideo}
+                        onPreviewImage={(url, title) => setPreviewImage({ url, title })}
                       />
                     )}
 
@@ -2676,6 +2709,15 @@ export default function TaskDetailPage() {
           title={playingVideo.title}
           open={true}
           onClose={() => setPlayingVideo(null)}
+        />
+      )}
+
+      {previewImage && (
+        <ImagePreviewModal
+          url={previewImage.url}
+          title={previewImage.title}
+          open={true}
+          onClose={() => setPreviewImage(null)}
         />
       )}
 
