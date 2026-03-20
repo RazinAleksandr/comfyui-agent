@@ -12,7 +12,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.deps import get_config, get_db_store, get_store
+from api.deps import get_config, get_db, get_db_store, get_store
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,160 @@ async def generate_appearance(influencer_id: str) -> dict:
     description = description.strip()
     await db_store.save_influencer(influencer_id, {"appearance_description": description})
     return {"appearance_description": description}
+
+
+@router.get("/{influencer_id}/generated-content")
+async def get_generated_content(influencer_id: str) -> list[dict]:
+    """Return all completed generation videos for an influencer with source metadata."""
+    db = get_db()
+    store = get_store()
+    data_dir = store.data_dir
+
+    rows = await db.fetchall(
+        "SELECT gj.file_name, gj.run_id, gj.outputs_json, gj.output_dir, "
+        "j.result_json, j.completed_at "
+        "FROM generation_jobs gj "
+        "LEFT JOIN jobs j ON j.job_id = gj.job_id "
+        "WHERE gj.influencer_id = ? AND gj.status = 'completed' "
+        "  AND gj.id = ("
+        "    SELECT MAX(gj2.id) FROM generation_jobs gj2"
+        "    WHERE gj2.run_id = gj.run_id AND gj2.file_name = gj.file_name"
+        "  ) "
+        "ORDER BY j.completed_at DESC",
+        [influencer_id],
+    )
+
+    if not rows:
+        return []
+
+    # Cache platform manifests per (run_id, platform) to avoid re-reading
+    manifest_cache: dict[str, list[dict]] = {}
+
+    result = []
+    for row in rows:
+        file_name = row["file_name"]
+        run_id = row["run_id"]
+
+        # Find the best output video (postprocessed > upscaled > refined > raw)
+        raw_outputs: list[str] = []
+        outputs_json = row.get("outputs_json")
+        if outputs_json:
+            try:
+                raw_outputs = json.loads(outputs_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if not raw_outputs:
+            result_json = row.get("result_json")
+            if result_json:
+                try:
+                    raw_outputs = json.loads(result_json).get("outputs", [])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if not raw_outputs:
+            continue
+
+        # Pick best output: last existing file (postprocessed is appended last)
+        video_path = None
+        for p in reversed(raw_outputs):
+            if isinstance(p, str) and Path(p).is_file():
+                video_path = p
+                break
+        if not video_path:
+            continue
+
+        video_url = _path_to_url(video_path, data_dir)
+        if not video_url:
+            continue
+
+        # Determine platform from filename (e.g. tiktok_20260314_views18500_uid123.mp4)
+        platform = file_name.split("_")[0] if "_" in file_name else ""
+
+        # Look up source metadata from platform manifest
+        source_info = _lookup_source_info(
+            influencer_id, run_id, platform, file_name, data_dir, manifest_cache
+        )
+
+        result.append({
+            "file_name": file_name,
+            "run_id": run_id,
+            "video_url": video_url,
+            "completed_at": row.get("completed_at"),
+            "source": source_info,
+        })
+
+    return result
+
+
+def _path_to_url(abs_path: str, data_dir: Path) -> str:
+    """Convert a filesystem path to a /files/ URL."""
+    try:
+        rel = Path(abs_path).relative_to(data_dir)
+        return f"/files/{rel}"
+    except ValueError:
+        return ""
+
+
+def _lookup_source_info(
+    influencer_id: str,
+    run_id: str,
+    platform: str,
+    file_name: str,
+    data_dir: Path,
+    cache: dict[str, list[dict]],
+) -> dict:
+    """Look up original source metadata from the platform manifest."""
+    cache_key = f"{run_id}/{platform}"
+    if cache_key not in cache:
+        manifest_path = (
+            data_dir
+            / "influencers"
+            / influencer_id
+            / "pipeline_runs"
+            / run_id
+            / platform
+            / "platform_manifest.json"
+        )
+        try:
+            with open(manifest_path) as f:
+                data = json.load(f)
+            cache[cache_key] = data.get("ingested_items", [])
+        except Exception:
+            cache[cache_key] = []
+
+    # Match by source_item_id embedded in the filename (uid{id})
+    # Filename format: {platform}_{date}_views{count}_uid{source_item_id}.mp4
+    uid = ""
+    stem = Path(file_name).stem
+    if "_uid" in stem:
+        uid = stem.split("_uid")[-1]
+
+    for item in cache[cache_key]:
+        if uid and item.get("source_item_id") == uid:
+            return {
+                "video_url": item.get("video_url", ""),
+                "platform": item.get("platform", platform),
+                "views": item.get("views", 0),
+                "likes": item.get("likes", 0),
+                "caption": item.get("caption", ""),
+            }
+
+    # Fallback: parse what we can from the filename
+    views = 0
+    if "_views" in stem:
+        try:
+            views_part = stem.split("_views")[1].split("_")[0]
+            views = int(views_part)
+        except (ValueError, IndexError):
+            pass
+
+    return {
+        "video_url": "",
+        "platform": platform,
+        "views": views,
+        "likes": 0,
+        "caption": "",
+    }
 
 
 def _safe_extension(filename: str) -> str:

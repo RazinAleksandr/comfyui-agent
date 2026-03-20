@@ -234,6 +234,22 @@ export interface AllocationInfo {
   borrow_server_id: string | null;
 }
 
+export interface GeneratedContentSource {
+  video_url: string;
+  platform: string;
+  views: number;
+  likes: number;
+  caption: string;
+}
+
+export interface GeneratedContentItem {
+  file_name: string;
+  run_id: string;
+  video_url: string;
+  completed_at: string | null;
+  source: GeneratedContentSource;
+}
+
 // ---- Presentation types (used by page components) ----
 
 export interface VideoPreview {

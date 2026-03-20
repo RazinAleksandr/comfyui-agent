@@ -6,6 +6,7 @@ import type {
   PipelineRunRequest,
   GenerationRequest,
   GenerationJob,
+  GeneratedContentItem,
   ServerStatus,
   ServerInfo,
   AllocationInfo,
@@ -87,6 +88,9 @@ export const api = {
       `/influencers/${id}/generate-appearance`,
       { method: "POST", timeoutMs: 120_000 },
     ),
+
+  getGeneratedContent: (id: string) =>
+    request<GeneratedContentItem[]>(`/influencers/${id}/generated-content`),
 
   // -- Parser / Pipeline --
   getParserDefaults: () =>

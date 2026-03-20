@@ -19,7 +19,7 @@ import {
 import { useInfluencer, usePipelineRuns, useJobSSE } from "../api/hooks";
 import { api } from "../api/client";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
-import type { InfluencerOut, JobInfo, Task } from "../api/types";
+import type { InfluencerOut, JobInfo, Task, GeneratedContentItem } from "../api/types";
 import {
   ArrowLeft,
   Download,
@@ -36,6 +36,7 @@ import {
   Pencil,
   Trash2,
   Settings2,
+  ExternalLink,
 } from "lucide-react";
 import { Separator } from "../components/ui/separator";
 import { Switch } from "../components/ui/switch";
@@ -66,6 +67,12 @@ const stageDescriptions = {
   review: "Human review in web UI — approve or skip videos and add generation prompts",
   generation: "ComfyUI's Wan 2.2 Animate workflow generates final content",
 };
+
+function formatViews(views: number): string {
+  if (views >= 1_000_000) return `${(views / 1_000_000).toFixed(1)}M`;
+  if (views >= 1_000) return `${(views / 1_000).toFixed(1)}K`;
+  return String(views);
+}
 
 function getStatusIcon(status: string) {
   switch (status) {
@@ -119,6 +126,9 @@ export default function AvatarDetailPage() {
   const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
   const [alignReference, setAlignReference] = useState(true);
   const [settingsDialog, setSettingsDialog] = useState<string | null>(null);
+  const [generatedContent, setGeneratedContent] = useState<GeneratedContentItem[]>([]);
+  const [loadingContent, setLoadingContent] = useState(true);
+  const [playingVideo, setPlayingVideo] = useState<string | null>(null);
 
   // Load default sources from config
   useEffect(() => {
@@ -129,6 +139,16 @@ export default function AvatarDetailPage() {
   useEffect(() => {
     if (influencer?.hashtags) setHashtags(influencer.hashtags.join(", "));
   }, [influencer?.hashtags]);
+
+  // Fetch generated content
+  useEffect(() => {
+    if (!avatarId) return;
+    setLoadingContent(true);
+    api.getGeneratedContent(avatarId)
+      .then(setGeneratedContent)
+      .catch(() => setGeneratedContent([]))
+      .finally(() => setLoadingContent(false));
+  }, [avatarId]);
 
   const { job: activeJob, isComplete: jobDone } = useJobSSE(activeJobId);
 
@@ -298,6 +318,96 @@ export default function AvatarDetailPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Generated Content */}
+        {!loadingContent && generatedContent.length > 0 && (
+          <div className="mb-8">
+            <div className="mb-4">
+              <h2 className="text-2xl font-bold mb-2">Generated Content</h2>
+              <p className="text-slate-600">
+                {generatedContent.length} video{generatedContent.length !== 1 ? "s" : ""} generated across all pipeline runs
+              </p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {generatedContent.map((item) => (
+                <div
+                  key={`${item.run_id}-${item.file_name}`}
+                  className="group relative rounded-xl overflow-hidden bg-black aspect-[9/16] cursor-pointer shadow-md hover:shadow-xl transition-shadow"
+                  onClick={() => setPlayingVideo(item.video_url)}
+                >
+                  <video
+                    src={item.video_url}
+                    className="w-full h-full object-cover"
+                    muted
+                    preload="metadata"
+                    playsInline
+                    onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
+                    onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-100 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute bottom-0 left-0 right-0 p-3 text-white">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-white/20 text-white border-0 backdrop-blur-sm">
+                        {item.source.platform || "unknown"}
+                      </Badge>
+                      {item.source.views > 0 && (
+                        <span className="text-[10px] text-white/80">
+                          {formatViews(item.source.views)} views
+                        </span>
+                      )}
+                    </div>
+                    {item.source.caption && (
+                      <p className="text-[11px] text-white/70 line-clamp-2 leading-tight">
+                        {item.source.caption}
+                      </p>
+                    )}
+                    {item.source.video_url && (
+                      <a
+                        href={item.source.video_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[10px] text-white/60 hover:text-white mt-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Original
+                      </a>
+                    )}
+                  </div>
+                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <div className="w-12 h-12 rounded-full bg-white/30 backdrop-blur-sm flex items-center justify-center">
+                      <Play className="w-6 h-6 text-white ml-0.5" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {loadingContent && (
+          <div className="mb-8">
+            <Skeleton className="h-8 w-48 mb-4" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="aspect-[9/16] rounded-xl" />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Video Playback Modal */}
+        <Dialog open={!!playingVideo} onOpenChange={(open) => !open && setPlayingVideo(null)}>
+          <DialogContent className="sm:max-w-3xl p-0 bg-black border-0 overflow-hidden">
+            {playingVideo && (
+              <video
+                src={playingVideo}
+                controls
+                autoPlay
+                className="w-full max-h-[85vh]"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
 
         {/* Content Generation Pipeline */}
         <div className="mb-6">

@@ -454,8 +454,20 @@ async def _do_server_up(*, server_id: str, workflow: str) -> dict:
         server_id, result.instance_id, result.ssh_host, result.ssh_port, result.dph_total or 0,
     )
 
-    # Sync registry with actual instance data
+    # Sync registry with actual instance data (state file → DB)
     manager.update_registry_from_service(server_id)
+    # Also update directly from the result in case state file read fails
+    if result.instance_id:
+        try:
+            manager._registry.update_entry_sync(
+                server_id,
+                instance_id=result.instance_id,
+                ssh_host=result.ssh_host,
+                ssh_port=result.ssh_port,
+                dph_total=result.dph_total,
+            )
+        except Exception:
+            logger.warning("Direct registry update failed for %s", server_id, exc_info=True)
 
     return {
         "status": "started",
@@ -486,29 +498,6 @@ async def _do_generation(
     manager = get_server_manager()
     svc = manager.get_or_create_service(server_id)
     server_lock = manager.get_server_lock(server_id)
-
-    # Reference alignment: generate adapted character image before GPU work
-    if align_reference and image_path and video_path:
-        try:
-            from api.ref_align import align_reference_image
-
-            if progress_fn:
-                progress_fn({"phase": "aligning", "stage": "reference_alignment"})
-
-            aligned = await align_reference_image(
-                influencer_id=influencer_id,
-                reference_image_path=image_path,
-                reference_video_path=video_path,
-                appearance_description=appearance_description,
-                video_prompt=prompt,
-                output_dir=output_dir,
-                job_id=job_id or "",
-            )
-            if aligned:
-                image_path = aligned
-                logger.info("Using aligned reference: %s", aligned)
-        except Exception:
-            logger.warning("Reference alignment failed, using original image", exc_info=True)
 
     # Report "queued" while waiting for the lock
     if progress_fn:
@@ -558,21 +547,52 @@ async def _do_generation(
         if seed_key not in overrides:
             overrides[seed_key] = str(random.randint(0, 2**32 - 1))
 
-    def _run_locked():
-        """Acquire per-server lock so only one generation runs at a time on each GPU."""
-        with server_lock:
-            if progress_fn:
-                progress_fn({"phase": "running", "stage": "running"})
-            return svc.run(
-                workflow=workflow,
-                inputs=inputs or None,
-                overrides=overrides or None,
-                output_dir=output_dir,
-                progress_callback=progress_fn,
-            )
+    def _run_gpu():
+        """Run ComfyUI generation (called while holding server lock)."""
+        if progress_fn:
+            progress_fn({"phase": "running", "stage": "running"})
+        return svc.run(
+            workflow=workflow,
+            inputs=inputs or None,
+            overrides=overrides or None,
+            output_dir=output_dir,
+            progress_callback=progress_fn,
+        )
 
     try:
-        result = await asyncio.to_thread(_run_locked)
+        # Acquire per-server lock so only one generation runs at a time
+        await asyncio.to_thread(server_lock.acquire)
+        try:
+            # Reference alignment: runs inside the lock so jobs align one at a time
+            if align_reference and image_path and video_path:
+                try:
+                    from api.ref_align import align_reference_image
+
+                    if progress_fn:
+                        progress_fn({"phase": "aligning", "stage": "reference_alignment"})
+
+                    aligned = await align_reference_image(
+                        influencer_id=influencer_id,
+                        reference_image_path=image_path,
+                        reference_video_path=video_path,
+                        appearance_description=appearance_description,
+                        video_prompt=prompt,
+                        output_dir=output_dir,
+                        job_id=job_id or "",
+                    )
+                    if aligned:
+                        # Update inputs with aligned image
+                        image_path = aligned
+                        logger.info("Using aligned reference: %s", aligned)
+                        p = Path(aligned)
+                        if p.exists():
+                            inputs["reference_image"] = p
+                except Exception:
+                    logger.warning("Reference alignment failed, using original image", exc_info=True)
+
+            result = await asyncio.to_thread(_run_gpu)
+        finally:
+            server_lock.release()
     except Exception as exc:
         if job_id:
             try:

@@ -41,3 +41,4 @@ output/
 *.session
 # frontend/
 shared/
+check

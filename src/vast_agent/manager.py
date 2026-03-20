@@ -220,18 +220,11 @@ class ServerManager:
                 except (ValueError, TypeError):
                     pass
 
-            if not entry.instance_id:
-                # No instance ID and older than 15 min — leftover placeholder, remove
-                self._safe_remove_server(sid)
-                removed.append(sid)
-                continue
-
-            # Check if the instance is actually alive
+            # Check if the server has active jobs (generation or server_up)
             has_active_job = False
             if self._job_checker:
                 has_active_job = self._job_checker(sid) > 0
             if not has_active_job:
-                # Also check for server_up jobs for THIS specific server
                 try:
                     from api.deps import get_job_manager
                     jm = get_job_manager()
@@ -239,6 +232,15 @@ class ServerManager:
                     has_active_job = any(j.status in ("pending", "running") for j in server_up_jobs)
                 except Exception:
                     pass
+
+            if not entry.instance_id:
+                if has_active_job:
+                    logger.info("Server %s has no instance_id but has active job, keeping", sid)
+                    continue
+                # No instance ID, no active jobs, older than 15 min — leftover placeholder
+                self._safe_remove_server(sid)
+                removed.append(sid)
+                continue
 
             svc = self.get_or_create_service(sid)
             try:
