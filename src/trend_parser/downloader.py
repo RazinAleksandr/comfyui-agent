@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import os
 import re
@@ -26,8 +27,10 @@ class TrendDownloadService:
         videos: list[RawTrendVideo],
         force: bool = False,
         download_dir: str | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[dict]:
         output: list[dict] = []
+        total = len(videos)
         for index, video in enumerate(videos, start=1):
             if not video.video_url:
                 output.append(
@@ -71,6 +74,8 @@ class TrendDownloadService:
                         "error_message": str(exc),
                     }
                 )
+            if progress_callback:
+                progress_callback(index, total)
         return output
 
     def _run_ytdlp(self, url: str, platform: str, download_dir: str | None = None) -> dict:
@@ -80,8 +85,12 @@ class TrendDownloadService:
 
         command_parts = shlex.split(command)
         binary = command_parts[0]
-        resolved_binary = _resolve_downloader_binary(binary)
-        command_parts[0] = resolved_binary
+        # Use python -m yt_dlp to avoid stale shebang issues after venv moves
+        if binary == "yt-dlp":
+            command_parts = [sys.executable, "-m", "yt_dlp"] + command_parts[1:]
+        else:
+            resolved_binary = _resolve_downloader_binary(binary)
+            command_parts[0] = resolved_binary
 
         base_dir = Path(download_dir).expanduser().resolve() if download_dir else self.downloads_dir.resolve()
         # When download_dir is provided by the pipeline runner, it already

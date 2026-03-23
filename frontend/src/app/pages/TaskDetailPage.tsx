@@ -1166,8 +1166,9 @@ function ReviewPanel({
   rejectedVideoUrls?: Record<string, string>;
   initialReview?: ReviewVideo[];
 }) {
-  const buildItems = useCallback((): ReviewItem[] =>
-    vlmVideos.map((v) => {
+  const buildItems = useCallback((): ReviewItem[] => {
+    // Build base list from VLM-accepted videos, restoring from initialReview (draft or completed)
+    const base: ReviewItem[] = vlmVideos.map((v) => {
       const vlm = vlmAccepted.find((a) => a.file_name === v.id);
       const existing = initialReview?.find((r) => r.file_name === v.id);
       return {
@@ -1180,7 +1181,29 @@ function ReviewPanel({
         confidence: vlm?.confidence,
         reasons: vlm?.reasons,
       };
-    }), [vlmVideos, vlmAccepted, initialReview]);
+    });
+
+    // Restore manually-added items from draft that aren't in the VLM-accepted set
+    if (initialReview) {
+      const baseNames = new Set(base.map((b) => b.file_name));
+      for (const d of initialReview) {
+        if (!baseNames.has(d.file_name)) {
+          const rj = vlmRejectedItems?.find((r) => r.file_name === d.file_name);
+          base.push({
+            file_name: d.file_name,
+            thumbnail: rejectedVideoUrls?.[d.file_name] ?? "",
+            approved: d.approved,
+            prompt: d.prompt || "",
+            readiness: rj?.scores.substitution_readiness,
+            persona_fit: rj?.scores.persona_fit,
+            confidence: rj?.confidence,
+            reasons: rj?.reasons,
+          });
+        }
+      }
+    }
+    return base;
+  }, [vlmVideos, vlmAccepted, initialReview, vlmRejectedItems, rejectedVideoUrls]);
 
   const [items, setItems] = useState<ReviewItem[]>(buildItems);
   const [submitting, setSubmitting] = useState(false);
@@ -1189,6 +1212,17 @@ function ReviewPanel({
   const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
   const [feedbackIdx, setFeedbackIdx] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
+  const draftSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-save draft to API (debounced) on every change
+  useEffect(() => {
+    if (draftSaveRef.current) clearTimeout(draftSaveRef.current);
+    draftSaveRef.current = setTimeout(() => {
+      const videos = items.map((it) => ({ file_name: it.file_name, approved: it.approved, prompt: it.prompt }));
+      api.submitReview(influencerId, runId, videos, true).catch(() => {});
+    }, 1500);
+    return () => { if (draftSaveRef.current) clearTimeout(draftSaveRef.current); };
+  }, [items, influencerId, runId]);
 
   const handleRegenerate = async (idx: number) => {
     const item = items[idx];
@@ -1241,19 +1275,23 @@ function ReviewPanel({
     setSelectedRejected(new Set());
   };
 
-  // BUG-003: Re-sync items when VLM data changes (e.g., after refetch)
+  // Re-sync items when VLM data or initialReview changes (e.g., after refetch or async rawRun load)
   useEffect(() => {
     setItems((prev) => {
       const next = buildItems();
-      // Preserve user edits for items that still exist, but prefer initialReview prompts
-      // over stale empty strings (avoids overwriting Gemini captions when rawRun loads async)
-      return next.map((n) => {
+      const nextNames = new Set(next.map((n) => n.file_name));
+      // For items in both prev and next: use next (API/draft) as base,
+      // but keep user-edited prompts that are non-empty over empty API values
+      const merged = next.map((n) => {
         const existing = prev.find((p) => p.file_name === n.file_name);
         if (existing) {
-          return { ...n, approved: existing.approved, prompt: existing.prompt || n.prompt };
+          return { ...n, prompt: existing.prompt || n.prompt };
         }
         return n;
       });
+      // Keep manually-added items (e.g. promoted rejected videos) that aren't in the VLM set
+      const added = prev.filter((p) => !nextNames.has(p.file_name));
+      return [...merged, ...added];
     });
   }, [buildItems]);
 
@@ -1904,6 +1942,7 @@ function GenerationPanel({
   existingJobs,
   onPlayVideo,
   onPreviewImage,
+  referenceImageUrl,
 }: {
   reviewVideos: ReviewVideo[];
   influencerId: string;
@@ -1912,6 +1951,7 @@ function GenerationPanel({
   existingJobs?: GenerationJob[];
   onPlayVideo?: (url: string, title: string) => void;
   onPreviewImage?: (url: string, title: string) => void;
+  referenceImageUrl?: string;
 }) {
   const [serverState, setServerState] = useState<"unknown" | "checking" | "offline" | "starting" | "running">("unknown");
   const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
@@ -1941,6 +1981,7 @@ function GenerationPanel({
   const [allocation, setAllocation] = useState<AllocationInfo | null>(null);
   const [shuttingDown, setShuttingDown] = useState(false);
   const [alignReference, setAlignReference] = useState(true);
+  const [alignCloseUp, setAlignCloseUp] = useState(false);
   // QA review state: job_id → { status, result }
   const [qaReviews, setQaReviews] = useState<Record<string, { qa_status: string; qa_result?: QaResult }>>({});
 
@@ -2062,8 +2103,10 @@ function GenerationPanel({
         reference_video: videoPath,
         prompt: video.prompt,
         align_reference: alignReference,
+        align_close_up: alignCloseUp,
       });
       setVideoJobs((prev) => ({ ...prev, [video.file_name]: job_id }));
+      onJobStarted();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2162,6 +2205,14 @@ function GenerationPanel({
       <>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
+            {referenceImageUrl && (
+              <img
+                src={referenceImageUrl}
+                alt="Reference"
+                className="w-10 h-14 rounded border border-slate-200 object-cover cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all flex-shrink-0"
+                onClick={() => onPreviewImage?.(referenceImageUrl, "Character Reference Image")}
+              />
+            )}
             <p className="text-sm text-slate-600">
               {approvedVideos.length} approved videos ready for generation
             </p>
@@ -2172,7 +2223,17 @@ function GenerationPanel({
                 onChange={() => setAlignReference(!alignReference)}
                 className="rounded border-slate-300"
               />
-              Align reference to video
+              Align reference
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={alignCloseUp}
+                onChange={() => setAlignCloseUp(!alignCloseUp)}
+                disabled={!alignReference}
+                className="rounded border-slate-300 disabled:opacity-40"
+              />
+              Close-up
             </label>
           </div>
           <Button onClick={runAll} disabled={generatingIdx !== null || serverState !== "running"} className="gap-2">
@@ -2376,6 +2437,19 @@ export default function TaskDetailPage() {
   const [rerunJobId, setRerunJobId] = useState<string | null>(null);
   const [editingReview, setEditingReview] = useState(false);
 
+  // On mount, check for active rerun jobs so progress survives page reload
+  useEffect(() => {
+    if (!avatarId || rerunJobId) return;
+    const rerunTypes = new Set(["rerun_download", "rerun_filter", "rerun_vlm"]);
+    api.activeJobs(undefined, avatarId).then((jobs) => {
+      const rerun = jobs.find((j) => {
+        const jType = (j as Record<string, unknown>).tags as Record<string, string> | undefined;
+        return j.status === "running" && jType?.type && rerunTypes.has(jType.type);
+      });
+      if (rerun) setRerunJobId(rerun.job_id);
+    }).catch(() => {});
+  }, [avatarId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePlayVideo = useCallback((url: string, title: string) => {
     setPlayingVideo({ url, title });
   }, []);
@@ -2537,7 +2611,25 @@ export default function TaskDetailPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         {/* Re-run buttons */}
-                        {key === "vlm_scoring" && stage.status === "completed" && !rerunJobId && (
+                        {key === "download" && (stage.status === "completed" || stage.status === "failed") && !rerunJobId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 text-xs"
+                            onClick={async () => {
+                              try {
+                                const { job_id } = await api.rerunDownload(runId!, { influencer_id: avatarId! });
+                                setRerunJobId(job_id);
+                              } catch (err) {
+                                console.error("Retry download failed:", err);
+                              }
+                            }}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Retry failed
+                          </Button>
+                        )}
+                        {key === "vlm_scoring" && (stage.status === "completed" || (stage.status === "pending" && task.stages.candidate_filter.status === "completed")) && !rerunJobId && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -2548,7 +2640,7 @@ export default function TaskDetailPage() {
                             Re-score
                           </Button>
                         )}
-                        {key === "candidate_filter" && stage.status === "completed" && !rerunJobId && (
+                        {key === "candidate_filter" && (stage.status === "completed" || stage.status === "failed" || (stage.status === "pending" && task.stages.download.status === "completed")) && !rerunJobId && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -2560,12 +2652,28 @@ export default function TaskDetailPage() {
                           </Button>
                         )}
                         {/* Re-run progress indicator */}
-                        {rerunJobId && (key === "vlm_scoring" || key === "candidate_filter") && (
-                          <div className="flex items-center gap-1.5 text-xs text-blue-600">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Re-running...
-                          </div>
-                        )}
+                        {rerunJobId && (() => {
+                          const stageToProgressKey: Record<string, string> = { download: "download", candidate_filter: "filter", vlm_scoring: "vlm" };
+                          const progressStage = stageToProgressKey[key];
+                          if (!progressStage) return null;
+                          const p = rerunJob.job?.progress ?? {};
+                          if (p.stage !== progressStage) return null;
+                          const current = (p.current as number) ?? 0;
+                          const total = (p.total as number) ?? 0;
+                          const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+                          const isRunning = p.status === "running";
+                          return (
+                            <div className="flex items-center gap-2.5 min-w-[180px]">
+                              <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin flex-shrink-0" />
+                              <div className="flex-1">
+                                <Progress value={isRunning && total > 0 ? pct : 100} className="h-1.5" />
+                              </div>
+                              <span className="text-xs text-slate-500 tabular-nums flex-shrink-0">
+                                {total > 0 ? `${current}/${total}` : "Processing..."}
+                              </span>
+                            </div>
+                          );
+                        })()}
                         {key === "review" && stage.status === "completed" && task.stages.vlm_scoring.status === "completed" && !editingReview && (
                           <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setEditingReview(true)}>
                             <Pencil className="w-3.5 h-3.5" />
@@ -2631,6 +2739,7 @@ export default function TaskDetailPage() {
                         onPlay={handlePlayVideo}
                         vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
                         rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
+                        initialReview={rawRun?.review?.videos}
                       />
                     )}
 
@@ -2671,6 +2780,7 @@ export default function TaskDetailPage() {
                         existingJobs={rawRun?.generation?.jobs}
                         onPlayVideo={handlePlayVideo}
                         onPreviewImage={(url, title) => setPreviewImage({ url, title })}
+                        referenceImageUrl={influencer?.reference_image_path ? `/files/${influencer.reference_image_path}` : undefined}
                       />
                     )}
 

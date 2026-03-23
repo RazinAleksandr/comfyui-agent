@@ -200,6 +200,7 @@ export interface GenerationRequest {
   prompt?: string;
   set_args?: Record<string, string>;
   align_reference?: boolean;
+  align_close_up?: boolean;
 }
 
 export interface ServerStatus {

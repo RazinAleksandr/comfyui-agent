@@ -427,14 +427,25 @@ class VastAgentService:
             logger.debug("Download validation skipped", exc_info=True)
 
         # Parse JSON output, rewrite remote paths to local
+        # The JSON line may be mixed with other stdout; scan lines in reverse
         outputs: list[str] = []
-        try:
-            remote_result = json.loads(stdout.strip())
-            for rpath in remote_result.get("outputs", []):
-                rel = rpath.replace(remote_output + "/", "")
-                outputs.append(str(local_output / rel))
-        except (json.JSONDecodeError, KeyError, AttributeError):
-            logger.warning("Could not parse JSON output from remote")
+        for line in reversed(stdout.strip().splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    remote_result = json.loads(line)
+                    for rpath in remote_result.get("outputs", []):
+                        rel = rpath.replace(remote_output + "/", "")
+                        outputs.append(str(local_output / rel))
+                    break
+                except (json.JSONDecodeError, KeyError, AttributeError):
+                    continue
+        if not outputs:
+            logger.warning("Could not parse JSON output from remote stdout, scanning local files")
+            # Fallback: find all media files in local output dir
+            for f in sorted(local_output.rglob("*")):
+                if f.is_file() and f.suffix.lower() in (".mp4", ".webm", ".gif", ".png", ".jpg"):
+                    outputs.append(str(f))
 
         return RunResult(outputs=outputs, output_dir=str(local_output))
 

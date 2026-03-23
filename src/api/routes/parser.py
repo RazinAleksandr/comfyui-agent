@@ -44,6 +44,7 @@ class ReviewVideoItem(BaseModel):
 
 class ReviewSubmission(BaseModel):
     videos: list[ReviewVideoItem]
+    draft: bool = False
 
 
 class RerunVlmRequest(BaseModel):
@@ -54,6 +55,10 @@ class RerunVlmRequest(BaseModel):
     thresholds: VlmThresholdsIn | None = None
     custom_persona_description: str | None = None
     custom_video_requirements: str | None = None
+
+
+class RerunDownloadRequest(BaseModel):
+    influencer_id: str
 
 
 class RerunFilterRequest(BaseModel):
@@ -140,8 +145,9 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
         raise HTTPException(status_code=404, detail="Run not found")
 
     db = get_db()
+    completed = 0 if body.draft else 1
     manifest = {
-        "completed": True,
+        "completed": not body.draft,
         "videos": [v.model_dump() for v in body.videos],
     }
 
@@ -157,15 +163,15 @@ async def submit_review(run_id: str, influencer_id: str, body: ReviewSubmission)
         if existing:
             review_id = existing["id"]
             await db.execute(
-                "UPDATE reviews SET completed = 1, updated_at = ? WHERE id = ?",
-                [_now(), review_id],
+                "UPDATE reviews SET completed = ?, updated_at = ? WHERE id = ?",
+                [completed, _now(), review_id],
             )
             # Replace all review videos
             await db.execute("DELETE FROM review_videos WHERE review_id = ?", [review_id])
         else:
             review_id = await db.execute_insert(
-                "INSERT INTO reviews (run_id, completed, created_at, updated_at) VALUES (?, 1, ?, ?)",
-                [run_id, _now(), _now()],
+                "INSERT INTO reviews (run_id, completed, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                [run_id, completed, _now(), _now()],
             )
 
         for v in body.videos:
@@ -238,6 +244,22 @@ async def rerun_vlm(run_id: str, body: RerunVlmRequest) -> dict:
         _rerun_vlm,
         {"type": "rerun_vlm", "influencer_id": body.influencer_id},
         run, body,
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/runs/{run_id}/rerun-download")
+async def rerun_download(run_id: str, body: RerunDownloadRequest) -> dict:
+    """Re-run downloads for failed videos in a pipeline run."""
+    store = get_store()
+    run = store.load_pipeline_run(body.influencer_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    jm = get_job_manager()
+    job_id = jm.submit_tagged(
+        _rerun_download,
+        {"type": "rerun_download", "influencer_id": body.influencer_id},
+        run,
     )
     return {"job_id": job_id}
 
@@ -604,8 +626,14 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         # Selected (VLM-approved)
         plat["selected_videos"] = _list_videos(plat.get("selected_dir"), data_dir)
 
-        # Candidate filter report
+        # Candidate filter report — try manifest path, fall back to latest on disk
         report = _load_json(plat.get("candidate_report_path"), data_dir)
+        if not report and plat_dir:
+            analysis_dir = plat_dir / "analysis"
+            if analysis_dir.is_dir():
+                reports = sorted(analysis_dir.glob("candidate_filter_report_*.json"))
+                if reports:
+                    report = _load_json(str(reports[-1].relative_to(data_dir)), data_dir)
         if report:
             plat["filter_report"] = {
                 "total_candidates": report.get("total_candidates"),
@@ -635,8 +663,14 @@ async def _enrich_run(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                 ],
             }
 
-        # VLM summary
+        # VLM summary — try manifest path, fall back to latest on disk
         vlm = _load_json(plat.get("vlm_summary_path"), data_dir)
+        if not vlm and plat_dir:
+            vlm_dir = plat_dir / "vlm"
+            if vlm_dir.is_dir():
+                summaries = sorted(vlm_dir.glob("vlm_summary_*.json"))
+                if summaries:
+                    vlm = _load_json(str(summaries[-1].relative_to(data_dir)), data_dir)
         if vlm:
             plat["vlm_report"] = {
                 "model": vlm.get("model"),
@@ -1013,8 +1047,9 @@ async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict
         if not filtered_dir.is_dir():
             continue
 
+        video_count = sum(1 for f in filtered_dir.iterdir() if f.is_file() and f.suffix in (".mp4", ".webm", ".mkv", ".mov"))
         if progress_fn:
-            progress_fn({"stage": "vlm", "platform": platform_name, "status": "running"})
+            progress_fn({"stage": "vlm", "platform": platform_name, "status": "running", "total": video_count})
 
         th = SelectorThresholds()
         if thresholds:
@@ -1047,6 +1082,21 @@ async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict
             ),
         )
 
+        # Update run_manifest.json with the new vlm_summary_path
+        run_manifest_path = abs_base_dir / "run_manifest.json"
+        if run_manifest_path.is_file():
+            try:
+                summaries = sorted(vlm_dir.glob("vlm_summary_*.json"))
+                if summaries:
+                    rel_vlm = str(summaries[-1].resolve().relative_to(get_store().data_dir))
+                    rm = json.loads(run_manifest_path.read_text())
+                    for p in rm.get("platforms", []):
+                        if p.get("platform") == platform_name:
+                            p["vlm_summary_path"] = rel_vlm
+                    run_manifest_path.write_text(json.dumps(rm, indent=2, ensure_ascii=False))
+            except Exception:
+                logger.debug("Failed to update run_manifest vlm path for %s", platform_name, exc_info=True)
+
         if progress_fn:
             progress_fn({"stage": "vlm", "platform": platform_name, "status": "completed"})
 
@@ -1061,13 +1111,172 @@ async def _rerun_vlm(run: dict, body: RerunVlmRequest, progress_fn=None) -> dict
     except Exception:
         logger.debug("Failed to invalidate review for run %s", run_id, exc_info=True)
 
+    # Auto-review: generate captions for VLM-selected videos
+    if progress_fn:
+        progress_fn({"stage": "review", "status": "running"})
+    try:
+        from trend_parser.caption import run_caption, CaptionRunConfig
+        from trend_parser.runner import find_video_files
+
+        appearance_description = None
+        content_description = None
+        try:
+            from api.deps import get_db_store
+            db_store = get_db_store()
+            inf_record = await db_store.load_influencer(body.influencer_id)
+            if inf_record:
+                appearance_description = inf_record.get("appearance_description")
+                content_description = inf_record.get("description")
+        except Exception:
+            logger.debug("Failed to load influencer appearance for auto-review", exc_info=True)
+
+        has_lora = False
+        try:
+            from comfy_pipeline.config import WorkflowConfig
+            wf_config = WorkflowConfig.from_yaml(
+                Path(__file__).resolve().parents[2] / "configs" / "wan_animate.yaml"
+            )
+            has_lora = wf_config.characters.get(body.influencer_id) is not None
+        except Exception:
+            pass
+
+        video_paths: list[Path] = []
+        for plat in run.get("platforms", []):
+            selected_dir = abs_base_dir / plat.get("platform", "") / "selected"
+            if selected_dir.is_dir():
+                video_paths.extend(find_video_files(selected_dir, max_videos=200))
+
+        if video_paths:
+            config = get_config()
+            results = await asyncio.to_thread(
+                run_caption,
+                CaptionRunConfig(
+                    video_paths=video_paths,
+                    model=config.gemini_model,
+                    api_key_env="GEMINI_API_KEY",
+                    timeout_sec=300,
+                    has_lora=has_lora,
+                    appearance_description=appearance_description,
+                    content_description=content_description,
+                ),
+            )
+            auto_videos = [
+                {"file_name": r.file_name, "approved": True, "prompt": r.caption}
+                for r in results
+            ]
+            await _auto_submit_review(run_id, auto_videos)
+    except Exception:
+        logger.warning("Auto-review after VLM rerun failed for run %s", run_id, exc_info=True)
+
+    if progress_fn:
+        progress_fn({"stage": "review", "status": "completed"})
+
     return {"status": "completed", "run_id": run_id}
 
 
-async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -> dict:
+async def _rerun_download(run: dict, progress_fn=None) -> dict:
+    """Re-download failed videos from a pipeline run's platform manifests."""
+    import json as _json
+
     from api.path_utils import to_absolute
+    from trend_parser.adapters.types import RawTrendVideo
+    from trend_parser.config import ParserConfig
+    from trend_parser.downloader import TrendDownloadService
+
+    store = get_store()
+    config = get_config()
     raw_base = run.get("base_dir", "")
-    abs_base_dir = to_absolute(raw_base, get_store().data_dir) if raw_base else None
+    abs_base_dir = to_absolute(raw_base, store.data_dir) if raw_base else None
+    run_id = run.get("run_id", "")
+    total_retried = 0
+    total_succeeded = 0
+
+    downloader = TrendDownloadService(config=config, downloads_dir=store.data_dir / "downloads")
+
+    for plat in run.get("platforms", []):
+        platform_name = plat.get("platform", "")
+        plat_dir = abs_base_dir / platform_name if abs_base_dir else Path(raw_base) / platform_name
+        manifest_path = plat_dir / "platform_manifest.json"
+        download_dir = plat_dir / "downloads"
+
+        if not manifest_path.is_file():
+            continue
+
+        manifest = _json.loads(manifest_path.read_text())
+        records = manifest.get("download_records", [])
+
+        # Collect failed records that have a source URL
+        failed = [r for r in records if r.get("status") == "failed" and r.get("source_url")]
+        if not failed:
+            continue
+
+        total_for_platform = len(failed)
+        if progress_fn:
+            progress_fn({"stage": "download", "platform": platform_name, "status": "running", "current": 0, "total": total_for_platform})
+
+        def _on_video_progress(current: int, total: int) -> None:
+            if progress_fn:
+                progress_fn({"stage": "download", "platform": platform_name, "status": "running", "current": current, "total": total})
+
+        # Build RawTrendVideo objects from failed records
+        videos = [
+            RawTrendVideo(
+                platform=platform_name,
+                source_item_id=r.get("source_item_id", ""),
+                video_url=r["source_url"],
+            )
+            for r in failed
+        ]
+
+        new_records = await asyncio.to_thread(
+            downloader.download_raw_videos,
+            platform=platform_name,
+            videos=videos,
+            force=True,
+            download_dir=str(download_dir),
+            progress_callback=_on_video_progress,
+        )
+
+        succeeded = sum(1 for r in new_records if r.get("status") == "downloaded")
+        total_retried += len(failed)
+        total_succeeded += succeeded
+
+        # Update manifest: replace failed records with new results
+        failed_ids = {r.get("source_item_id") for r in failed}
+        kept = [r for r in records if r.get("source_item_id") not in failed_ids]
+        manifest["download_records"] = kept + new_records
+        # Update download counts
+        from collections import Counter
+        all_records = manifest["download_records"]
+        manifest["download_counts"] = dict(Counter(r["status"] for r in all_records))
+
+        manifest_path.write_text(_json.dumps(manifest, indent=2, ensure_ascii=False))
+
+        # Also update the run_manifest.json download_counts
+        run_manifest_path = abs_base_dir / "run_manifest.json"
+        if run_manifest_path.is_file():
+            try:
+                rm = _json.loads(run_manifest_path.read_text())
+                for p in rm.get("platforms", []):
+                    if p.get("platform") == platform_name:
+                        p["download_counts"] = manifest.get("download_counts", {})
+                run_manifest_path.write_text(_json.dumps(rm, indent=2, ensure_ascii=False))
+            except Exception:
+                logger.debug("Failed to update run_manifest for %s", platform_name, exc_info=True)
+
+        if progress_fn:
+            progress_fn({"stage": "download", "platform": platform_name, "status": "completed",
+                          "retried": len(failed), "succeeded": succeeded})
+
+    return {"status": "completed", "run_id": run_id, "retried": total_retried, "succeeded": total_succeeded}
+
+
+async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -> dict:
+    import json as _json
+    from api.path_utils import to_absolute
+    store = get_store()
+    raw_base = run.get("base_dir", "")
+    abs_base_dir = to_absolute(raw_base, store.data_dir) if raw_base else None
 
     for plat in run.get("platforms", []):
         platform_name = plat.get("platform", "")
@@ -1079,10 +1288,11 @@ async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -
         if not download_dir.is_dir():
             continue
 
+        video_count = sum(1 for f in download_dir.iterdir() if f.is_file() and f.suffix in (".mp4", ".webm", ".mkv", ".mov"))
         if progress_fn:
-            progress_fn({"stage": "filter", "platform": platform_name, "status": "running"})
+            progress_fn({"stage": "filter", "platform": platform_name, "status": "running", "total": video_count})
 
-        await asyncio.to_thread(
+        _report, report_path = await asyncio.to_thread(
             run_candidate_filter,
             CandidateFilterConfig(
                 download_dir=download_dir,
@@ -1093,6 +1303,19 @@ async def _rerun_filter(run: dict, body: RerunFilterRequest, progress_fn=None) -
                 sync_filtered=True,
             ),
         )
+
+        # Update run_manifest.json with the new candidate_report_path
+        run_manifest_path = abs_base_dir / "run_manifest.json"
+        if run_manifest_path.is_file():
+            try:
+                rm = _json.loads(run_manifest_path.read_text())
+                rel_report = str(report_path.resolve().relative_to(store.data_dir))
+                for p in rm.get("platforms", []):
+                    if p.get("platform") == platform_name:
+                        p["candidate_report_path"] = rel_report
+                run_manifest_path.write_text(_json.dumps(rm, indent=2, ensure_ascii=False))
+            except Exception:
+                logger.debug("Failed to update run_manifest filter path for %s", platform_name, exc_info=True)
 
         if progress_fn:
             progress_fn({"stage": "filter", "platform": platform_name, "status": "completed"})

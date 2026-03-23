@@ -131,6 +131,7 @@ class GenerationRequest(BaseModel):
     set_args: dict[str, str] = Field(default_factory=dict)
     output_dir: str | None = None
     align_reference: bool = False
+    align_close_up: bool = False
 
 
 class ServerRequest(BaseModel):
@@ -423,6 +424,7 @@ async def start_generation(body: GenerationRequest) -> dict:
         influencer_id=body.influencer_id,
         server_id=server_id,
         align_reference=body.align_reference,
+        align_close_up=body.align_close_up,
         appearance_description=appearance_description,
     )
 
@@ -502,6 +504,7 @@ async def _do_generation(
     influencer_id: str,
     server_id: str,
     align_reference: bool = False,
+    align_close_up: bool = False,
     appearance_description: str = "",
     progress_fn: Callable[[dict], None] | None = None,
     job_id: str | None = None,
@@ -604,6 +607,7 @@ async def _do_generation(
                         video_prompt=prompt,
                         output_dir=output_dir,
                         job_id=job_id or "",
+                        close_up=align_close_up,
                     )
                     if aligned:
                         # Update inputs with aligned image

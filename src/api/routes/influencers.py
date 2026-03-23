@@ -184,6 +184,7 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
         "  AND gj.id = ("
         "    SELECT MAX(gj2.id) FROM generation_jobs gj2"
         "    WHERE gj2.run_id = gj.run_id AND gj2.file_name = gj.file_name"
+        "      AND gj2.status = 'completed'"
         "  ) "
         "ORDER BY j.completed_at DESC",
         [influencer_id],

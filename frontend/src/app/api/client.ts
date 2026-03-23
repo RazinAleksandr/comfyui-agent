@@ -160,6 +160,12 @@ export const api = {
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     ),
 
+  rerunDownload: (runId: string, body: { influencer_id: string }) =>
+    request<{ job_id: string }>(
+      `/parser/runs/${encodeURIComponent(runId)}/rerun-download`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+
   rerunFilter: (runId: string, body: {
     influencer_id: string;
     top_k?: number;
@@ -192,13 +198,13 @@ export const api = {
     ),
 
   // -- Review --
-  submitReview: (influencerId: string, runId: string, videos: ReviewVideo[]) =>
+  submitReview: (influencerId: string, runId: string, videos: ReviewVideo[], draft = false) =>
     request<ReviewData>(
       `/parser/runs/${encodeURIComponent(runId)}/review?influencer_id=${encodeURIComponent(influencerId)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videos }),
+        body: JSON.stringify({ videos, draft }),
       },
     ),
 

@@ -125,6 +125,7 @@ export default function AvatarDetailPage() {
   const [hashtags, setHashtags] = useState(influencer?.hashtags?.join(", ") ?? "");
   const [defaultSources, setDefaultSources] = useState<Record<string, string>>({ tiktok: "tiktok_custom", instagram: "apify" });
   const [alignReference, setAlignReference] = useState(true);
+  const [alignCloseUp, setAlignCloseUp] = useState(false);
   const [settingsDialog, setSettingsDialog] = useState<string | null>(null);
   const [generatedContent, setGeneratedContent] = useState<GeneratedContentItem[]>([]);
   const [loadingContent, setLoadingContent] = useState(true);
@@ -472,6 +473,7 @@ export default function AvatarDetailPage() {
                       <>
                         <div>Workflow: <span className="font-medium text-slate-700">wan_animate</span></div>
                         <div>Align reference: <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span></div>
+                        {alignReference && <div>Close-up: <span className="font-medium text-slate-700">{alignCloseUp ? "yes" : "no"}</span></div>}
                       </>
                     )}
                   </div>
@@ -573,6 +575,13 @@ export default function AvatarDetailPage() {
               </div>
               <Switch id="cfg-align-ref" checked={alignReference} onCheckedChange={setAlignReference} />
             </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="cfg-align-closeup">Close-up alignment</Label>
+                <p className="text-xs text-slate-500 mt-0.5">Generate close-up portrait instead of matching video framing</p>
+              </div>
+              <Switch id="cfg-align-closeup" checked={alignCloseUp} onCheckedChange={setAlignCloseUp} disabled={!alignReference} />
+            </div>
             <DialogFooter>
               <Button onClick={() => setSettingsDialog(null)}>Done</Button>
             </DialogFooter>
@@ -604,6 +613,7 @@ export default function AvatarDetailPage() {
               vlmMaxVideos={vlmMaxVideos}
               autoReview={autoReview}
               alignReference={alignReference}
+              alignCloseUp={alignCloseUp}
               defaultSources={defaultSources}
               onStarted={(jobId) => {
                 setPipelineDialogOpen(false);
@@ -987,6 +997,7 @@ function StartPipelineConfirm({
   vlmMaxVideos,
   autoReview,
   alignReference,
+  alignCloseUp,
   defaultSources,
   onStarted,
 }: {
@@ -999,6 +1010,7 @@ function StartPipelineConfirm({
   vlmMaxVideos: number;
   autoReview: boolean;
   alignReference: boolean;
+  alignCloseUp: boolean;
   defaultSources: Record<string, string>;
   onStarted: (jobId: string) => void;
 }) {
@@ -1083,6 +1095,12 @@ function StartPipelineConfirm({
           <span className="text-slate-500">Align reference</span>
           <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span>
         </div>
+        {alignReference && (
+          <div className="flex justify-between">
+            <span className="text-slate-500">Close-up alignment</span>
+            <span className="font-medium text-slate-700">{alignCloseUp ? "yes" : "no"}</span>
+          </div>
+        )}
       </div>
       <p className="text-xs text-slate-400">To change settings, close this dialog and click on the stage cards above.</p>
       {error && <p className="text-sm text-red-600">{error}</p>}

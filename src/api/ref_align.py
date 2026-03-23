@@ -40,40 +40,60 @@ def extract_video_frame(video_path: Path, time_sec: float = 1.0) -> Path:
 def build_alignment_prompt(
     appearance_description: str = "",
     video_prompt: str = "",
+    close_up: bool = False,
 ) -> str:
     """Build the Gemini prompt for reference image alignment."""
     appearance_block = (
-        f"\nThe character's key features: {appearance_description}"
+        f"\n\nCharacter identity details: {appearance_description}"
         if appearance_description else ""
     )
     video_block = (
-        f"\nContext about the target video: {video_prompt}"
+        f"\n\nVideo context: {video_prompt}"
         if video_prompt else ""
     )
+
+    if close_up:
+        framing = (
+            "Frame the output as a close-up portrait: head and shoulders only, "
+            "face centered and clearly visible."
+        )
+    else:
+        framing = (
+            "Match the same framing and body crop as the video frame "
+            "(close-up, medium shot, or full-body — whatever image 2 shows)."
+        )
+
     return f"""You are given TWO images:
-1. CHARACTER REFERENCE — the person whose identity must be preserved
-2. VIDEO FRAME — a frame from the target video showing the desired scene
+1. CHARACTER REFERENCE — the person whose identity you must preserve
+2. VIDEO FRAME — the target scene whose lighting, pose, and style you must match
 
-Generate a new photo of the person from image 1, adapted to match the context of image 2.
-
-PRESERVE from the character reference:
-- Face shape, facial features, skin tone
-- Eye color and shape
-- Overall body type and proportions
+Generate a NEW photo-realistic image of the person from image 1, as if they were
+photographed in the exact scene from image 2. Do NOT cut-and-paste or face-swap —
+re-imagine the entire image from scratch so that lighting falls naturally on the
+character's face and body.
 {appearance_block}
 
-ADAPT to match the video frame:
-- Clothing style and colors (match what the person in the video frame is wearing)
-- Hair styling (adapt to match the video context)
-- Body pose and camera angle (match the approximate pose in the video frame)
-- Lighting direction and color temperature
+CHARACTER IDENTITY (from image 1 — preserve exactly):
+- All facial features, face shape, skin tone
+- Eye color and shape (preserve any asymmetry such as heterochromia)
+- Hair color and texture
+- Body type and proportions
+
+SCENE CONTEXT (from image 2 — match naturally):
+- Pose and body position of the person in the video frame
+- Clothing style and accessories worn by the person in the video frame
+- Background, environment, and atmosphere
+- CRITICAL: Lighting direction, intensity, color temperature, shadows, and highlights
+  must be consistent across the entire image. The face and body must be lit by the
+  same light sources as the background. No mismatched brightness or color casts.
 {video_block}
 
-IMPORTANT:
-- The generated image must clearly be the SAME PERSON as in image 1
-- Photo-realistic, clean portrait suitable as a reference for video generation
-- No text, watermarks, or borders
-- Single person only""".strip()
+OUTPUT REQUIREMENTS:
+- {framing}
+- Photorealistic — looks like a real photograph, not a composite
+- Uniform lighting: face, body, and background share the same light
+- The person must be unmistakably the same individual as in image 1
+- No text, watermarks, borders, or artifacts""".strip()
 
 
 def call_gemini_generate_image(
@@ -149,6 +169,7 @@ async def align_reference_image(
     output_dir: str,
     model: str = "",
     job_id: str = "",
+    close_up: bool = False,
 ) -> str | None:
     """Generate an aligned reference image adapted to the target video.
 
@@ -167,7 +188,7 @@ async def align_reference_image(
             from api.deps import get_config
             model = get_config().gemini_image_model
         except Exception:
-            model = "gemini-2.5-flash-image"
+            model = "gemini-3.1-flash-image-preview"
 
     ref_path = Path(reference_image_path)
     video_path = Path(reference_video_path)
@@ -187,7 +208,7 @@ async def align_reference_image(
 
         try:
             # Step 2: Build prompt
-            prompt = build_alignment_prompt(appearance_description, video_prompt)
+            prompt = build_alignment_prompt(appearance_description, video_prompt, close_up=close_up)
 
             # Step 3: Call Gemini with retries
             last_error = None
