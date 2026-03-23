@@ -37,4 +37,4 @@ output/
 shared/
 
 # ai agents
-.claude/
+# .claude/
