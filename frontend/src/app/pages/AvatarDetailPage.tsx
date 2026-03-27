@@ -65,7 +65,7 @@ const stageDescriptions = {
   candidate_filter: "Deterministic pre-filtering using ffprobe for quality checks",
   vlm_scoring: "Gemini AI scores videos on 8 criteria for persona match",
   review: "Human review in web UI — approve or skip videos and add generation prompts",
-  generation: "ComfyUI's Wan 2.2 Animate workflow generates final content",
+  generation: "LightX2V Wan 2.2 Animate generates final content",
 };
 
 function formatViews(views: number): string {
@@ -356,6 +356,12 @@ export default function AvatarDetailPage() {
                       onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-100 group-hover:opacity-100 transition-opacity" />
+                    {/* Job ID badge (top-left) */}
+                    <div className="absolute top-2 left-2">
+                      <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-black/50 text-white/80 border-0 backdrop-blur-sm font-mono">
+                        {item.job_id ? item.job_id.slice(0, 8) : item.run_id.slice(0, 8)}
+                      </Badge>
+                    </div>
                     <div className="absolute bottom-0 left-0 right-0 p-3 text-white">
                       <div className="flex items-center gap-1.5 mb-1">
                         <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-white/20 text-white border-0 backdrop-blur-sm">
@@ -367,6 +373,11 @@ export default function AvatarDetailPage() {
                           </span>
                         )}
                       </div>
+                      {item.completed_at && (
+                        <p className="text-[10px] text-white/50 mb-0.5">
+                          {new Date(item.completed_at).toLocaleDateString()} {new Date(item.completed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      )}
                       {item.source.caption && (
                         <p className="text-[11px] text-white/70 line-clamp-2 leading-tight">
                           {item.source.caption}
@@ -471,7 +482,7 @@ export default function AvatarDetailPage() {
                     )}
                     {key === "generation" && (
                       <>
-                        <div>Workflow: <span className="font-medium text-slate-700">wan_animate</span></div>
+                        <div>Workflow: <span className="font-medium text-slate-700">x2v_animate</span></div>
                         <div>Align reference: <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span></div>
                         {alignReference && <div>Close-up: <span className="font-medium text-slate-700">{alignCloseUp ? "yes" : "no"}</span></div>}
                       </>

@@ -124,7 +124,7 @@ async def _update_generation_job_failed(job_id: str, error: str) -> None:
 
 class GenerationRequest(BaseModel):
     influencer_id: str
-    workflow: str = "wan_animate"
+    workflow: str = "x2v_animate"
     reference_image: str | None = None
     reference_video: str | None = None
     prompt: str = ""
@@ -135,7 +135,7 @@ class GenerationRequest(BaseModel):
 
 
 class ServerRequest(BaseModel):
-    workflow: str = "wan_animate"
+    workflow: str = "x2v_animate"
     influencer_id: str | None = None
 
 
@@ -461,8 +461,16 @@ async def _do_server_up(*, server_id: str, workflow: str) -> dict:
             "dph_total": current.dph_total,
         }
 
-    logger.info("_do_server_up: calling svc.up() for server %s ...", server_id)
-    result = await asyncio.to_thread(svc.up, workflow)
+    is_x2v = workflow.startswith("x2v_")
+    if is_x2v:
+        from x2v_pipeline.config import X2VConfig
+
+        logger.info("_do_server_up: using LightX2V engine for server %s ...", server_id)
+        x2v_config = X2VConfig.from_yaml(PROJECT_ROOT / "configs" / f"{workflow}.yaml")
+        result = await asyncio.to_thread(svc.up_x2v, x2v_config)
+    else:
+        logger.info("_do_server_up: calling svc.up() for server %s ...", server_id)
+        result = await asyncio.to_thread(svc.up, workflow)
     logger.info(
         "_do_server_up: server %s started — instance=%s ssh=%s:%s dph=%.3f",
         server_id, result.instance_id, result.ssh_host, result.ssh_port, result.dph_total or 0,
@@ -531,61 +539,100 @@ async def _do_generation(
     if progress_fn:
         progress_fn({"phase": "queued", "stage": "queued"})
 
-    # Build inputs dict
-    inputs: dict[str, Path] = {}
-    if image_path:
-        p = Path(image_path)
-        if p.exists():
-            inputs["reference_image"] = p
-    if video_path:
-        p = Path(video_path)
-        if p.exists():
-            inputs["reference_video"] = p
+    # Detect engine from workflow name
+    is_x2v = workflow.startswith("x2v_")
 
-    # Build overrides dict
-    overrides: dict[str, str] = {}
-    if prompt:
-        overrides["prompt"] = prompt
-    overrides.update(set_args)
+    if is_x2v:
+        # --- LightX2V engine path ---
+        from x2v_pipeline.config import X2VConfig
 
-    # Auto-apply character LoRAs from workflow config if not explicitly set
-    if not set_args.get("lora_high") and not set_args.get("lora_low"):
-        try:
-            from comfy_pipeline.config import WorkflowConfig
-            wf_config = WorkflowConfig.from_yaml(PROJECT_ROOT / "configs" / f"{workflow}.yaml")
-            char_args = wf_config.character_set_args(influencer_id)
-            if char_args:
-                for arg in char_args:
-                    k, _, v = arg.partition("=")
-                    if k and v:
-                        overrides[k] = v
-                logger.info("Auto-applied LoRAs for %s: %s", influencer_id, char_args)
-            else:
-                # Unknown character — disable personal LoRAs to avoid
-                # using hardcoded defaults from the workflow file
-                overrides.setdefault("lora_high_strength", "0")
-                overrides.setdefault("lora_low_strength", "0")
-                logger.info("No LoRA config for %s, setting strengths to 0", influencer_id)
-        except Exception:
-            pass  # no character config — generate without LoRAs
+        x2v_config = X2VConfig.from_yaml(PROJECT_ROOT / "configs" / f"{workflow}.yaml")
 
-    # Inject random seeds for KSampler nodes — ensures unique results per run.
-    # seed_main (324) = main generation, seed_face (480) = face refine, seed_skin (494) = skin refine.
-    for seed_key in ("seed_main", "seed_face", "seed_skin"):
-        if seed_key not in overrides:
-            overrides[seed_key] = str(random.randint(0, 2**32 - 1))
+        # Check if character has LoRAs configured
+        if x2v_config.characters.get(influencer_id):
+            logger.info("Auto-applied x2v LoRAs for %s", influencer_id)
 
-    def _run_gpu():
-        """Run ComfyUI generation (called while holding server lock)."""
-        if progress_fn:
-            progress_fn({"phase": "running", "stage": "running"})
-        return svc.run(
-            workflow=workflow,
-            inputs=inputs or None,
-            overrides=overrides or None,
-            output_dir=output_dir,
-            progress_callback=progress_fn,
-        )
+        # Build timestamped output subdir: generated/x2v_animate/{video_stem}/{gen_timestamp}/
+        gen_timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        video_stem = Path(video_path).stem if video_path else "unknown"
+        output_dir = str(Path(output_dir) / workflow / video_stem / gen_timestamp)
+
+        # Build x2v-format inputs (character_id used by remote_runner for LoRA selection)
+        x2v_inputs: dict[str, str] = {
+            "video_path": video_path or "",
+            "refer_path": image_path or "",
+            "prompt": prompt or x2v_config.parameters.get("prompt", ""),
+            "negative_prompt": x2v_config.parameters.get("negative_prompt", ""),
+            "character_id": influencer_id,
+        }
+
+        def _run_gpu():
+            """Run LightX2V generation (called while holding server lock)."""
+            if progress_fn:
+                progress_fn({"phase": "running", "stage": "running"})
+            return svc.run_x2v(
+                config=x2v_config,
+                inputs=x2v_inputs,
+                output_dir=output_dir,
+                progress_callback=progress_fn,
+            )
+    else:
+        # --- ComfyUI engine path ---
+        # Build inputs dict
+        inputs: dict[str, Path] = {}
+        if image_path:
+            p = Path(image_path)
+            if p.exists():
+                inputs["reference_image"] = p
+        if video_path:
+            p = Path(video_path)
+            if p.exists():
+                inputs["reference_video"] = p
+
+        # Build overrides dict
+        overrides: dict[str, str] = {}
+        if prompt:
+            overrides["prompt"] = prompt
+        overrides.update(set_args)
+
+        # Auto-apply character LoRAs from workflow config if not explicitly set
+        if not set_args.get("lora_high") and not set_args.get("lora_low"):
+            try:
+                from comfy_pipeline.config import WorkflowConfig
+                wf_config = WorkflowConfig.from_yaml(PROJECT_ROOT / "configs" / f"{workflow}.yaml")
+                char_args = wf_config.character_set_args(influencer_id)
+                if char_args:
+                    for arg in char_args:
+                        k, _, v = arg.partition("=")
+                        if k and v:
+                            overrides[k] = v
+                    logger.info("Auto-applied LoRAs for %s: %s", influencer_id, char_args)
+                else:
+                    # Unknown character — disable personal LoRAs to avoid
+                    # using hardcoded defaults from the workflow file
+                    overrides.setdefault("lora_high_strength", "0")
+                    overrides.setdefault("lora_low_strength", "0")
+                    logger.info("No LoRA config for %s, setting strengths to 0", influencer_id)
+            except Exception:
+                pass  # no character config — generate without LoRAs
+
+        # Inject random seeds for KSampler nodes — ensures unique results per run.
+        # seed_main (324) = main generation, seed_face (480) = face refine, seed_skin (494) = skin refine.
+        for seed_key in ("seed_main", "seed_face", "seed_skin"):
+            if seed_key not in overrides:
+                overrides[seed_key] = str(random.randint(0, 2**32 - 1))
+
+        def _run_gpu():
+            """Run ComfyUI generation (called while holding server lock)."""
+            if progress_fn:
+                progress_fn({"phase": "running", "stage": "running"})
+            return svc.run(
+                workflow=workflow,
+                inputs=inputs or None,
+                overrides=overrides or None,
+                output_dir=output_dir,
+                progress_callback=progress_fn,
+            )
 
     try:
         # Acquire per-server lock so only one generation runs at a time
@@ -615,7 +662,10 @@ async def _do_generation(
                         logger.info("Using aligned reference: %s", aligned)
                         p = Path(aligned)
                         if p.exists():
-                            inputs["reference_image"] = p
+                            if is_x2v:
+                                x2v_inputs["refer_path"] = aligned
+                            else:
+                                inputs["reference_image"] = p
                 except Exception:
                     logger.warning("Reference alignment failed, using original image", exc_info=True)
 
@@ -637,14 +687,17 @@ async def _do_generation(
             logger.warning("Auto-shutdown check failed for %s", server_id, exc_info=True)
 
     # Post-processing (grain, sharpness, vignette)
+    # For x2v: ISP runs on remote GPU, already included in outputs
+    # For ComfyUI: run ISP locally
     outputs = list(result.outputs)
-    try:
-        pp_path = await asyncio.to_thread(postprocess_outputs, outputs)
-        if pp_path:
-            outputs.append(pp_path)
-            logger.info("Postprocessed: %s", pp_path)
-    except Exception:
-        logger.warning("Postprocessing failed", exc_info=True)
+    if not is_x2v:
+        try:
+            pp_path = await asyncio.to_thread(postprocess_outputs, outputs)
+            if pp_path:
+                outputs.append(pp_path)
+                logger.info("Postprocessed: %s", pp_path)
+        except Exception:
+            logger.warning("Postprocessing failed", exc_info=True)
 
     # Convert to relative for storage
     rel_outputs = [to_relative(p, data_dir) for p in outputs]

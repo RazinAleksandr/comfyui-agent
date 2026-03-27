@@ -29,6 +29,13 @@ from vast_agent.remote import (
     run_remote_detached,
 )
 from vast_agent.vastai import Instance, VastAPIError, VastClient
+from x2v_pipeline.config import X2VConfig
+from x2v_pipeline.install import build_check_command, build_install_commands
+from x2v_pipeline.remote_runner import (
+    build_remote_command,
+    collect_outputs,
+    parse_x2v_progress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +46,7 @@ DEFAULT_CONFIG = CONFIGS_DIR / "vast.yaml"
 
 SSH_POLL_INTERVAL = 10
 SSH_POLL_TIMEOUT = 600
-INSTANCE_LOAD_TIMEOUT = 180
+INSTANCE_LOAD_TIMEOUT = 360
 MAX_RENT_ATTEMPTS = 5
 RENT_RETRY_DELAY = 30
 SEARCH_RETRY_DELAY = 30  # fallback; overridden by config.search_retry_delay
@@ -448,6 +455,212 @@ class VastAgentService:
                     outputs.append(str(f))
 
         return RunResult(outputs=outputs, output_dir=str(local_output))
+
+    def run_x2v(
+        self,
+        config: X2VConfig,
+        inputs: dict[str, str],
+        output_dir: str,
+        model_path: str = "/workspace/models",
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> RunResult:
+        """Run a LightX2V pipeline on the remote GPU server.
+
+        Args:
+            config: LightX2V pipeline configuration.
+            inputs: Dict with keys: video_path, refer_path, prompt, negative_prompt.
+            output_dir: Local directory for downloaded results.
+            model_path: Remote path to model weights directory.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            RunResult with list of local output file paths.
+        """
+        state = self._load_state()
+        host = state["ssh_host"]
+        port = state["ssh_port"]
+        key = self.config.ssh_key
+
+        def _report(data: dict) -> None:
+            if progress_callback is not None:
+                progress_callback(data)
+
+        # Upload input files (reference image + driving video)
+        remote_input_dir = f"{self.config.remote_path}/_inputs"
+        input_files: dict[str, Path] = {}
+        if inputs.get("video_path"):
+            input_files["video"] = Path(inputs["video_path"])
+        if inputs.get("refer_path"):
+            input_files["refer"] = Path(inputs["refer_path"])
+
+        remote_paths: dict[str, str] = {}
+        if input_files:
+            self._log("Uploading input files...")
+            _report({"phase": "uploading", "stage": "uploading"})
+            remote_paths = rsync_push_files(
+                host, port, input_files, remote_input_dir, ssh_key=key
+            )
+
+        # Map local paths to remote paths after upload
+        remote_inputs: dict[str, str] = {
+            "video_path": remote_paths.get("video", ""),
+            "refer_path": remote_paths.get("refer", ""),
+            "prompt": inputs.get("prompt", ""),
+            "negative_prompt": inputs.get("negative_prompt", ""),
+            "character_id": inputs.get("character_id", ""),
+        }
+
+        # Create unique run directory on remote
+        timestamp = int(time.time())
+        run_dir = f"{self.config.remote_path}/run_{timestamp}"
+
+        # Build the bash script
+        project_src = f"{self.config.remote_path}/src"
+        script = build_remote_command(config, remote_inputs, run_dir, model_path, project_src=project_src)
+
+        # Write script to remote
+        self._log("Writing run script to remote...")
+        # Use heredoc to write the script file
+        write_cmd = f"mkdir -p {run_dir} && cat > {run_dir}/run.sh << 'SCRIPTEOF'\n{script}\nSCRIPTEOF"
+        run_remote(host, port, write_cmd, ssh_key=key, capture=True)
+
+        # Execute detached
+        self._log("Running LightX2V pipeline on remote server...")
+        _report({"phase": "running", "stage": "running"})
+        run_remote_detached(
+            host, port,
+            f"PYTHONUNBUFFERED=1 bash {run_dir}/run.sh",
+            ssh_key=key,
+        )
+
+        # Poll progress (same pattern as existing run())
+        stderr_offset = 0
+        stdout_offset = 0
+        poll_interval = 5
+        exit_code: int | None = None
+
+        while exit_code is None:
+            time.sleep(poll_interval)
+
+            # Read stderr for logging
+            stderr_all = get_remote_file(host, port, "/tmp/comfy_stderr.log", ssh_key=key)
+            if len(stderr_all) > stderr_offset:
+                new_stderr = stderr_all[stderr_offset:]
+                stderr_offset = len(stderr_all)
+                for line in new_stderr.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        self._log(stripped)
+                        progress = parse_x2v_progress(stripped)
+                        if progress:
+                            _report(progress)
+
+            # Read stdout for progress markers
+            stdout_all = get_remote_file(host, port, "/tmp/comfy_stdout.txt", ssh_key=key)
+            if len(stdout_all) > stdout_offset:
+                new_stdout = stdout_all[stdout_offset:]
+                stdout_offset = len(stdout_all)
+                for line in new_stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        self._log(stripped)
+                        progress = parse_x2v_progress(stripped)
+                        if progress:
+                            _report(progress)
+
+            exit_code = poll_remote_done(host, port, ssh_key=key)
+
+        # Flush remaining output
+        for log_file in ("/tmp/comfy_stderr.log", "/tmp/comfy_stdout.txt"):
+            remaining = get_remote_file(host, port, log_file, ssh_key=key)
+            offset = stderr_offset if "stderr" in log_file else stdout_offset
+            if len(remaining) > offset:
+                for line in remaining[offset:].splitlines():
+                    if line.strip():
+                        self._log(line.strip())
+
+        if exit_code != 0:
+            raise RemoteError(f"LightX2V pipeline failed (exit {exit_code})")
+
+        # Determine remote output paths
+        remote_outputs = collect_outputs(run_dir, config)
+
+        # Pull results
+        local_output = Path(output_dir)
+        local_output.mkdir(parents=True, exist_ok=True)
+
+        self._log("Downloading results...")
+        _report({"phase": "downloading", "stage": "downloading"})
+
+        # Download each output file individually
+        outputs: list[str] = []
+        for name, remote_path in remote_outputs.items():
+            local_file = local_output / Path(remote_path).name
+            rsync_pull(host, port, remote_path, str(local_file), ssh_key=key)
+            if local_file.exists():
+                outputs.append(str(local_file))
+            else:
+                logger.warning("Expected output %s not found after download", local_file)
+
+        return RunResult(outputs=outputs, output_dir=str(local_output))
+
+    def up_x2v(self, x2v_config: X2VConfig) -> ServerStatus:
+        """Rent instance, push code, and install LightX2V pipeline.
+
+        Unlike up(), this does NOT start a persistent server process —
+        LightX2V runs as a CLI tool, not a daemon.
+
+        Returns the final server status.
+        """
+        config = self.config
+        client = VastClient()
+
+        # Step 1: Search for offers
+        retry_delay = getattr(config, "search_retry_delay", SEARCH_RETRY_DELAY)
+        max_attempts = getattr(config, "max_search_attempts", MAX_SEARCH_ATTEMPTS)
+        self._log(f"Searching for {config.gpu} instance...")
+        offers = _search_offers(client, config)
+        search_attempt = 1
+        while not offers and search_attempt < max_attempts:
+            self._log(f"No offers found (attempt {search_attempt}/{max_attempts}). Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+            search_attempt += 1
+            offers = _search_offers(client, config)
+        if not offers:
+            raise VastAPIError(f"No offers found after {max_attempts} attempts (~{max_attempts * retry_delay // 60} min).")
+
+        instance_id, instance = _rent_with_retry(
+            client, config, offers, log=self._log
+        )
+        self._save_state(instance_id, instance.ssh_host, instance.ssh_port, instance.dph_total)
+
+        host = instance.ssh_host
+        port = instance.ssh_port
+        key = config.ssh_key
+
+        # Step 2: Push code
+        self._log("Pushing code to remote...")
+        rsync_push(
+            host=host,
+            port=port,
+            local_path=self.project_root,
+            remote_path=config.remote_path,
+            ssh_key=key,
+        )
+
+        # Step 3: Install LightX2V pipeline (system Python — disposable container)
+        self._log("Installing LightX2V pipeline...")
+        commands = build_install_commands(x2v_config)
+        for cmd in commands:
+            self._log(f"  Running: {cmd[:80]}...")
+            run_remote(host, port, cmd, ssh_key=key)
+
+        # Step 5: Verify installation
+        self._log("Verifying LightX2V installation...")
+        run_remote(host, port, build_check_command(), ssh_key=key)
+
+        self._log(f"Instance ready! SSH: root@{host} -p {port}")
+        return self.status()
 
     def down(self) -> None:
         """Stop server and destroy instance."""

@@ -320,3 +320,38 @@ def postprocess_outputs(
         vignette=vignette,
     )
     return str(out_path)
+
+
+def main() -> None:
+    """CLI entry point for ISP post-processing."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="ISP post-processing: grain, sharpness, brightness, vignette"
+    )
+    parser.add_argument("--input", required=True, help="Input video path")
+    parser.add_argument("--output", required=True, help="Output video path")
+    parser.add_argument("--graininess", type=int, default=40)
+    parser.add_argument("--sharpness", type=int, default=20)
+    parser.add_argument("--brightness", type=int, default=-5)
+    parser.add_argument("--vignette", type=int, default=10)
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    process_video(
+        Path(args.input),
+        Path(args.output),
+        graininess=args.graininess,
+        sharpness=args.sharpness,
+        brightness=args.brightness,
+        vignette=args.vignette,
+    )
+
+
+if __name__ == "__main__":
+    main()

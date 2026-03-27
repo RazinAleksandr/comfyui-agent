@@ -5,10 +5,11 @@
 - `src/trend_parser/` - Pipeline: ingest → download → filter → VLM scoring → caption
 - `src/vast_agent/` - VastAI GPU orchestration, multi-server management (db_registry.py, manager.py, service.py)
 - `src/comfy_pipeline/` - ComfyUI workflow execution (runs on remote GPU only)
+- `src/x2v_pipeline/` - LightX2V pipeline (replacing ComfyUI): config.py, remote_runner.py, install.py, postprocess.py
 - `src/isp_pipeline/` - Video post-processing
 - `src/telegram_bot/` - Telegram UI (legacy, still functional)
 - `frontend/` - React 18 + Vite + Tailwind 4 + shadcn/ui
-- `configs/` - YAML config files (vast.yaml, wan_animate.yaml, parser.yaml)
+- `configs/` - YAML config files (vast.yaml, wan_animate.yaml, x2v_animate.yaml, parser.yaml)
 
 ## Architecture
 - SQLite database at `shared/studio.db` (WAL mode). Schema in `src/api/schema.sql`.

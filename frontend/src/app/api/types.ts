@@ -250,6 +250,7 @@ export interface GeneratedContentSource {
 }
 
 export interface GeneratedContentItem {
+  job_id: string;
   file_name: string;
   run_id: string;
   video_url: string;

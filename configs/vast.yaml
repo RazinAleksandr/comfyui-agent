@@ -1,17 +1,17 @@
-gpu: RTX 5090
-min_gpu_ram: 32000 # MB
+gpu: L40
+min_gpu_ram: 46000 # MB — L40/L40S has 48GB
 disk_space: 100 # GB
-max_price: 0.50 # $/hr
-max_bw_price: 0.0010 # $/GB download; filters out expensive bandwidth hosts ($10/TB ceiling)
-image: vastai/comfy:v0.16.4-cuda-12.9-py312
+max_price: 0.6 # $/hr
+max_bw_price: 0.0050 # $/GB download; filters out expensive bandwidth hosts ($10/TB ceiling)
+image: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 remote_path: /workspace/avatar-factory
 label: avatar-factory
 ssh_key: ~/.ssh/id_ed25519
-geolocation: "" # "worldwide" # empty = worldwide EU - europe
+geolocation: "EU" # "worldwide" # empty = worldwide EU - europe
 health_check_interval: 120 # seconds between background server health checks (0 = disabled)
 search_retry_delay: 30 # seconds between offer search retries when no GPU available
 max_search_attempts: 20 # max search retries before giving up (~10 min at 30s)
 extra_filters:
   inet_down: { "gte": 3000 } # min ~375 MB/s download
   num_gpus: { "eq": 1 }
-  cuda_max_good: { "gte": 13.0 } # RTX 5090 (Blackwell) needs CUDA 13.0+
+  cuda_max_good: { "gte": 12.0 } # L40S needs CUDA 12.x

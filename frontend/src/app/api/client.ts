@@ -226,7 +226,7 @@ export const api = {
     return request<ServerStatus>(`/generation/server/status${params}`);
   },
 
-  serverUp: (workflow = "wan_animate", influencerId?: string) => {
+  serverUp: (workflow = "x2v_animate", influencerId?: string) => {
     const body: Record<string, string> = { workflow };
     if (influencerId) body.influencer_id = influencerId;
     return request<{ job_id: string; server_id: string }>("/generation/server/up", {

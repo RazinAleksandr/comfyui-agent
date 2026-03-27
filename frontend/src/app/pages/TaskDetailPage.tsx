@@ -75,7 +75,7 @@ const stageDescriptions = {
   candidate_filter: "Deterministic pre-filtering using ffprobe - probes first 8 seconds of each video to check resolution, duration, codec quality. Ranks candidates and copies top-K to filtered/",
   vlm_scoring: "Sends each filtered video to Gemini with the influencer's persona profile. Gemini scores on 8 criteria (theme_match, persona_fit, face_visibility, motion_stability, occlusion_risk, etc.). Auto-decides accept/reject based on thresholds",
   review: "Review VLM-approved videos. Approve or skip each video and provide generation prompts for approved ones",
-  generation: "For each approved video, vast-agent uploads the reference image + video to the remote GPU and runs ComfyUI's Wan 2.2 Animate workflow: Raw \u2192 Refined \u2192 Upscaled \u2192 Postprocessed",
+  generation: "For each approved video, vast-agent uploads the reference image + video to the remote GPU and runs LightX2V Wan 2.2 Animate: Generate \u2192 SkinContrast \u2192 RIFE interpolation",
 };
 
 function getStatusIcon(status: string, size = "w-5 h-5") {
@@ -2055,7 +2055,7 @@ function GenerationPanel({
         if (status.dph_total) setServerCost(status.dph_total);
       } else {
         setServerState("starting");
-        const { job_id, server_id } = await api.serverUp("wan_animate", influencerId);
+        const { job_id, server_id } = await api.serverUp("x2v_animate", influencerId);
         setServerJobId(job_id);
         setServerId(server_id);
       }

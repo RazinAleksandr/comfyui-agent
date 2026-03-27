@@ -1,0 +1,141 @@
+engine: lightx2v
+
+lightx2v:
+  repo_url: https://github.com/ModelTC/LightX2V.git
+  repo_path: /workspace/LightX2V
+  extra_pip:
+    - onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+    - flash-attn --no-build-isolation
+    - decord
+    - spandrel
+    - moviepy
+    - sgl-kernel
+
+models:
+  # Full Wan2.2 Animate model repo — transformer (.safetensors), T5/CLIP/VAE (.pth),
+  # process_checkpoint/, config.json. Downloaded via snapshot_download to model_path.
+  # Preprocessing ckpt_path is hardcoded to {model_path}/process_checkpoint in remote_runner.py.
+  - name: wan_model
+    hf_repo: Wan-AI/Wan2.2-Animate-14B
+    type: hf_repo
+    min_size: 0
+  # SkinContrast upscale model
+  - name: skin_contrast
+    path: 1xSkinContrast-SuperUltraCompact.pth
+    url: https://huggingface.co/RazinAleks/1xSkinContrast-SuperUltraCompact/resolve/main/1xSkinContrast-SuperUltraCompact.pth
+    min_size: 10000
+  # RIFE frame interpolation (zip containing flownet.pkl)
+  - name: rife
+    path: rife/
+    type: rife_zip
+    url: https://huggingface.co/hzwer/RIFE/resolve/main/RIFEv4.26_0921.zip
+    min_size: 0
+  # Relight LoRA (not in HF repo — separate Comfy-Org download)
+  - name: relight_lora
+    path: loras/wan2.2_animate_14B_relight_lora_bf16.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_animate_14B_relight_lora_bf16.safetensors
+    min_size: 100000000
+  # T2V diffusion model for refinement (~29GB) — only needed if refinement.enabled: true
+  # WARNING: if enabled, must go in a subdirectory to avoid polluting transformer glob
+  - name: refine_model
+    path: refine/wan2.2_t2v_low_noise_14B_fp16.safetensors
+    url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp16.safetensors
+    min_size: 10000000000
+  # Personal LoRAs
+  - name: altf4_high_noise
+    path: loras/altf4_high_noise.safetensors
+    url: https://huggingface.co/RazinAleks/altf4girl-lora/resolve/main/altf4girl_high_noise/epoch-0.safetensors
+    min_size: 0
+  - name: altf4_low_noise
+    path: loras/altf4_low_noise.safetensors
+    url: https://huggingface.co/RazinAleks/altf4girl-lora/resolve/main/altf4girl_low_noise/epoch-0.safetensors
+    min_size: 0
+  - name: emi2souls_high_noise
+    path: loras/emi2souls_high_noise.safetensors
+    url: https://huggingface.co/RazinAleks/emi2soul-lora/resolve/main/emi2soul_high_noise/epoch-2.safetensors
+    min_size: 0
+  - name: emi2souls_low_noise
+    path: loras/emi2souls_low_noise.safetensors
+    url: https://huggingface.co/RazinAleks/emi2soul-lora/resolve/main/emi2soul_low_noise/epoch-2.safetensors
+    min_size: 0
+
+preprocessing:
+  resolution_area: [1280, 720]
+  retarget_flag: true
+
+inference:
+  infer_steps: 20
+  sample_guide_scale: 5.0
+  sample_shift: 5.0
+  target_video_length: 77
+  target_height: 720
+  target_width: 1280
+  text_len: 512
+  self_attn_1_type: flash_attn2
+  cross_attn_1_type: flash_attn2
+  cross_attn_2_type: flash_attn2
+  adapter_attn_type: torch_sdpa
+  enable_cfg: false
+  cpu_offload: false
+  unload_modules: true
+  rope_type: torch
+  refert_num: 1
+  replace_flag: false
+  fps: 16
+
+postprocess:
+  skin_contrast: true
+  rife_multiplier: 2
+  output_fps: 32
+  crf: 19
+
+isp:
+  enabled: true
+  graininess: 40
+  sharpness: 20
+  brightness: -5
+  vignette: 10
+
+refinement:
+  enabled: false
+  model: refine_model
+  pass1:
+    denoise_strength: 0.13
+    steps: 4
+    cfg: 1.0
+    use_mask: true
+    prompt: "Natural skin textures with visible peach fuzz, natural shadows"
+  pass2:
+    denoise_strength: 0.15
+    steps: 6
+    cfg: 2.2
+    use_mask: false
+    prompt: "Natural skin textures with visible peach fuzz, natural shadows"
+
+lora_configs:
+  - name: relight
+    path: loras/wan2.2_animate_14B_relight_lora_bf16.safetensors
+    strength: 1.0
+
+characters:
+  altf4girl:
+    loras:
+      - path: loras/altf4_high_noise.safetensors
+        strength: 0.89
+      - path: loras/altf4_low_noise.safetensors
+        strength: 0.89
+  emi2souls:
+    loras:
+      - path: loras/emi2souls_high_noise.safetensors
+        strength: 0.89
+      - path: loras/emi2souls_low_noise.safetensors
+        strength: 0.89
+
+parameters:
+  prompt: "A photorealistic video showing a person doing actions"
+  negative_prompt: "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+
+outputs:
+  raw: output_raw.mp4
+  final: output_final.mp4
+  isp: output_isp.mp4

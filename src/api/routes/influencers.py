@@ -176,7 +176,7 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
     data_dir = store.data_dir
 
     rows = await db.fetchall(
-        "SELECT gj.file_name, gj.run_id, gj.outputs_json, gj.output_dir, "
+        "SELECT gj.job_id, gj.file_name, gj.run_id, gj.outputs_json, gj.output_dir, "
         "j.result_json, j.completed_at "
         "FROM generation_jobs gj "
         "LEFT JOIN jobs j ON j.job_id = gj.job_id "
@@ -220,13 +220,23 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
         if not raw_outputs:
             continue
 
-        # Pick best output: last existing file (postprocessed is appended last)
+        # Pick best output: prefer isp > final > postprocessed > upscaled > refined > raw
         from api.path_utils import to_absolute
+        _OUTPUT_PRIORITY = ("output_isp", "output_final", "postprocessed", "upscaled", "refined", "output_raw", "raw")
         video_path = None
-        for p in reversed(raw_outputs):
-            if isinstance(p, str) and to_absolute(p, data_dir).is_file():
-                video_path = p
+        for preferred in _OUTPUT_PRIORITY:
+            for p in raw_outputs:
+                if isinstance(p, str) and preferred in p and to_absolute(p, data_dir).is_file():
+                    video_path = p
+                    break
+            if video_path:
                 break
+        # Fallback: last existing file
+        if not video_path:
+            for p in reversed(raw_outputs):
+                if isinstance(p, str) and to_absolute(p, data_dir).is_file():
+                    video_path = p
+                    break
         if not video_path:
             continue
 
@@ -243,6 +253,7 @@ async def get_generated_content(influencer_id: str) -> list[dict]:
         )
 
         result.append({
+            "job_id": row.get("job_id", ""),
             "file_name": file_name,
             "run_id": run_id,
             "video_url": video_url,
