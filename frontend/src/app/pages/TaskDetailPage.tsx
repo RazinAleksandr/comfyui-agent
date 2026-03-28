@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
@@ -90,6 +89,21 @@ function getStatusIcon(status: string, size = "w-5 h-5") {
       return <Circle className={`${size} text-amber-500`} />;
     default:
       return <Circle className={`${size} text-slate-300`} />;
+  }
+}
+
+function getStatusIconWhite(status: string, size = "w-[18px] h-[18px]") {
+  switch (status) {
+    case "completed":
+      return <CheckCircle2 className={`${size} text-white`} />;
+    case "in-progress":
+      return <Loader2 className={`${size} text-white animate-spin`} />;
+    case "failed":
+      return <XCircle className={`${size} text-white`} />;
+    case "lost":
+      return <Circle className={`${size} text-white/70`} />;
+    default:
+      return <Circle className={`${size} text-white/50`} />;
   }
 }
 
@@ -2419,6 +2433,57 @@ function GenerationPanel({
   );
 }
 
+// --- Stage key type ---
+type StageKey = keyof typeof stageIcons;
+
+const STAGE_KEYS: StageKey[] = ["trend_ingestion", "download", "candidate_filter", "vlm_scoring", "review", "generation"];
+
+const stageNumbers: Record<StageKey, string> = {
+  trend_ingestion: "01",
+  download: "02",
+  candidate_filter: "03",
+  vlm_scoring: "04",
+  review: "05",
+  generation: "06",
+};
+
+function computeBestStage(
+  task: { stages: Record<StageKey, { status: string }> } | null | undefined,
+  rerunJobId: string | null,
+): StageKey {
+  if (!task) return "trend_ingestion";
+  const stages = task.stages;
+
+  // 1. If rerun job is active, select the stage being re-run
+  if (rerunJobId) {
+    // Reruns target download, candidate_filter, or vlm_scoring
+    for (const k of ["download", "candidate_filter", "vlm_scoring"] as StageKey[]) {
+      if (stages[k].status === "in-progress") return k;
+    }
+  }
+
+  // 2. If review is pending and VLM scoring is completed -> select review
+  if (stages.review.status === "pending" && stages.vlm_scoring.status === "completed") {
+    return "review";
+  }
+
+  // 3. If generation has running jobs (in-progress) -> select generation
+  if (stages.generation.status === "in-progress") {
+    return "generation";
+  }
+
+  // 4. Otherwise -> last completed stage, or first in-progress stage
+  let lastCompleted: StageKey | null = null;
+  let firstInProgress: StageKey | null = null;
+  for (const k of STAGE_KEYS) {
+    if (stages[k].status === "completed") lastCompleted = k;
+    if (stages[k].status === "in-progress" && !firstInProgress) firstInProgress = k;
+  }
+  if (firstInProgress) return firstInProgress;
+  if (lastCompleted) return lastCompleted;
+  return "trend_ingestion";
+}
+
 export default function TaskDetailPage() {
   const { avatarId, runId } = useParams();
   const { data: task, loading: loadingTask, refetch: refetchTask } = usePipelineRun(avatarId, runId);
@@ -2436,6 +2501,18 @@ export default function TaskDetailPage() {
   const [showFilterRerunDialog, setShowFilterRerunDialog] = useState(false);
   const [rerunJobId, setRerunJobId] = useState<string | null>(null);
   const [editingReview, setEditingReview] = useState(false);
+
+  // Active stage for sidebar navigation
+  const [activeStage, setActiveStage] = useState<StageKey>("trend_ingestion");
+  const hasAutoSelected = useRef(false);
+
+  // Auto-select best stage when data loads
+  useEffect(() => {
+    if (task && !hasAutoSelected.current) {
+      hasAutoSelected.current = true;
+      setActiveStage(computeBestStage(task, rerunJobId));
+    }
+  }, [task, rerunJobId]);
 
   // On mount, check for active rerun jobs so progress survives page reload
   useEffect(() => {
@@ -2467,25 +2544,44 @@ export default function TaskDetailPage() {
   if (loadingTask || loadingInf) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
-        <div className="container mx-auto px-4 py-8 max-w-6xl">
-          <Skeleton className="h-8 w-40 mb-6" />
-          <Card className="mb-8">
-            <CardHeader>
-              <Skeleton className="h-8 w-64 mb-4" />
-              <Skeleton className="h-4 w-48" />
-              <Skeleton className="h-2 w-full mt-4" />
-            </CardHeader>
-          </Card>
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Card key={i} className="mb-6">
-              <CardHeader>
-                <Skeleton className="h-6 w-48" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-20 w-full" />
-              </CardContent>
-            </Card>
-          ))}
+        {/* Loading skeleton — header */}
+        <div className="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-slate-200/60 h-14 px-6 flex items-center">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-7 w-7 rounded-lg" />
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-5 w-px" />
+            <Skeleton className="h-4 w-12" />
+            <Skeleton className="h-4 w-2" />
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-4 w-2" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+        </div>
+        <div className="flex">
+          {/* Skeleton sidebar */}
+          <div className="w-56 flex-shrink-0 border-r border-slate-200/60 bg-white/60 p-3 space-y-1">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 px-3 py-2.5 mx-2">
+                <Skeleton className="w-[18px] h-[18px] rounded-full" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-3.5 w-28" />
+                  <Skeleton className="h-3 w-16" />
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Skeleton content */}
+          <div className="flex-1 p-8 space-y-6">
+            <Skeleton className="h-[88px] w-full rounded-t-2xl" />
+            <div className="flex items-center gap-6 px-6">
+              <Skeleton className="h-8 w-8 rounded-full" />
+              <Skeleton className="h-8 w-12" />
+              <Skeleton className="h-4 w-12" />
+              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-4 w-16" />
+            </div>
+            <Skeleton className="h-48 w-full rounded-2xl" />
+          </div>
         </div>
       </div>
     );
@@ -2493,7 +2589,7 @@ export default function TaskDetailPage() {
 
   if (!task || !influencer) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
         <div className="text-center">
           <h2 className="text-2xl font-bold mb-4">Task not found</h2>
           <Link to="/">
@@ -2511,308 +2607,394 @@ export default function TaskDetailPage() {
     (stage) => stage.status === "completed"
   ).length;
   const totalStages = Object.keys(task.stages).length;
-  const progressPercentage = (completedStages / totalStages) * 100;
+
+  const activeStageData = task.stages[activeStage];
+  const activeStageIndex = STAGE_KEYS.indexOf(activeStage);
+  const ActiveStageIcon = stageIcons[activeStage];
+
+  // Helper: render re-run progress for a given stage key (used in content header)
+  const renderRerunProgress = (key: StageKey) => {
+    if (!rerunJobId) return null;
+    const stageToProgressKey: Record<string, string> = { download: "download", candidate_filter: "filter", vlm_scoring: "vlm" };
+    const progressStage = stageToProgressKey[key];
+    if (!progressStage) return null;
+    const p = rerunJob.job?.progress ?? {};
+    if (p.stage !== progressStage) return null;
+    const current = (p.current as number) ?? 0;
+    const total = (p.total as number) ?? 0;
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    const isRunning = p.status === "running";
+    return (
+      <div className="flex items-center gap-2.5 min-w-[180px]">
+        <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin flex-shrink-0" />
+        <div className="flex-1">
+          <Progress value={isRunning && total > 0 ? pct : 100} className="h-1.5" />
+        </div>
+        <span className="text-xs text-slate-500 tabular-nums flex-shrink-0">
+          {total > 0 ? `${current}/${total}` : "Processing..."}
+        </span>
+      </div>
+    );
+  };
+
+  // Gradient header color based on stage status
+  const gradientHeaderClass =
+    activeStageData.status === "completed" ? "bg-gradient-to-r from-green-50 to-emerald-50/50 border-b border-green-100" :
+    activeStageData.status === "in-progress" ? "bg-gradient-to-r from-blue-50 to-sky-50/50 border-b border-blue-100" :
+    activeStageData.status === "failed" ? "bg-gradient-to-r from-red-50 to-rose-50/50 border-b border-red-100" :
+    "bg-gradient-to-r from-slate-50 to-slate-50/50 border-b border-slate-100";
+
+  // Stage icon color for content header
+  const stageIconBgClass =
+    activeStageData.status === "completed" ? "bg-green-100" :
+    activeStageData.status === "in-progress" ? "bg-blue-100" :
+    activeStageData.status === "failed" ? "bg-red-100" :
+    activeStageData.status === "lost" ? "bg-amber-100" :
+    "bg-slate-100";
+
+  const stageIconColorClass =
+    activeStageData.status === "completed" ? "text-green-600" :
+    activeStageData.status === "in-progress" ? "text-blue-600" :
+    activeStageData.status === "failed" ? "text-red-600" :
+    activeStageData.status === "lost" ? "text-amber-500" :
+    "text-slate-400";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60 overflow-x-hidden">
-      <div className="container mx-auto px-4 py-8 max-w-6xl">
-        <Link to={`/avatar/${influencer.influencer_id}`}>
-          <Button variant="ghost" className="mb-6">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to {influencer.name}
-          </Button>
-        </Link>
-
-        {/* Task Header */}
-        <Card className="mb-8">
-          <CardHeader>
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <CardTitle className="text-3xl mb-2">Run {task.id}</CardTitle>
-                <CardDescription className="flex items-center gap-2 text-base">
-                  <Clock className="w-4 h-4" />
-                  Created: {new Date(task.created_at).toLocaleString()}
-                </CardDescription>
+      {/* ========= STICKY HEADER with breadcrumb ========= */}
+      <div className="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-slate-200/60 h-14">
+        <div className="flex items-center justify-between px-6 h-full">
+          {/* Left: Brand + Breadcrumb */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
+                <Sparkles className="w-3.5 h-3.5 text-white" />
               </div>
-              <Badge className={`${getStatusColor(task.status)} text-base px-4 py-1`}>
-                {task.status}
-              </Badge>
+              <span className="text-[13px] font-semibold text-slate-800 hidden sm:inline">AI Avatar Studio</span>
             </div>
+            <div className="w-px h-5 bg-slate-200/80 flex-shrink-0" />
+            <nav className="flex items-center gap-1.5 min-w-0 text-[13px]">
+              <Link to="/" className="text-blue-600 hover:text-blue-700 font-medium transition-colors">
+                Studio
+              </Link>
+              <span className="text-slate-300">/</span>
+              <Link to={`/avatar/${influencer.influencer_id}`} className="text-blue-600 hover:text-blue-700 font-medium transition-colors truncate max-w-[120px]">
+                {influencer.name}
+              </Link>
+              <span className="text-slate-300">/</span>
+              <span className="text-slate-900 font-medium truncate">Run {task.id.slice(-8)}</span>
+            </nav>
+          </div>
 
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-16 h-16 rounded-lg overflow-hidden bg-gradient-to-br from-purple-100 to-pink-100 flex-shrink-0">
-                <ImageWithFallback
-                  src={influencer.profile_image_url ?? ""}
-                  alt={influencer.name}
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <div>
-                <div className="font-semibold text-lg">{influencer.name}</div>
-                <div className="text-sm text-slate-600">@{influencer.influencer_id}</div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-slate-600">Pipeline Progress</span>
-                <span className="font-semibold">
-                  {completedStages} of {totalStages} stages completed
-                </span>
-              </div>
-              <Progress value={progressPercentage} className="h-2" />
-            </div>
-          </CardHeader>
-        </Card>
-
-        {/* Stage Details */}
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold mb-2">Stage Results</h2>
-          <p className="text-slate-600 mb-4">
-            Detailed breakdown of each pipeline stage
-          </p>
-          <Separator />
-        </div>
-
-        <div className="space-y-6">
-          {Object.entries(task.stages).map(([key, stage], index) => {
-            const Icon = stageIcons[key as keyof typeof stageIcons];
-            const isLast = index === Object.keys(task.stages).length - 1;
-
-            return (
-              <div key={key} className="relative">
-                <Card className={`${stage.status === "in-progress" ? "border-blue-300 shadow-lg" : stage.status === "lost" ? "border-amber-300" : ""}`}>
-                  <CardHeader>
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                          stage.status === "completed" ? "bg-green-100" :
-                          stage.status === "in-progress" ? "bg-blue-100" :
-                          stage.status === "failed" ? "bg-red-100" :
-                          stage.status === "lost" ? "bg-amber-100" :
-                          "bg-slate-100"
-                        }`}>
-                          <Icon className={`w-6 h-6 ${
-                            stage.status === "completed" ? "text-green-600" :
-                            stage.status === "in-progress" ? "text-blue-600" :
-                            stage.status === "failed" ? "text-red-600" :
-                            stage.status === "lost" ? "text-amber-500" :
-                            "text-slate-400"
-                          }`} />
-                        </div>
-                        <div>
-                          <CardTitle className="text-xl mb-1">
-                            Stage {index + 1}: {stageTitles[key as keyof typeof stageTitles]}
-                          </CardTitle>
-                          <CardDescription>
-                            {stageDescriptions[key as keyof typeof stageDescriptions]}
-                          </CardDescription>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {/* Re-run buttons */}
-                        {key === "download" && (stage.status === "completed" || stage.status === "failed") && !rerunJobId && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 text-xs"
-                            onClick={async () => {
-                              try {
-                                const { job_id } = await api.rerunDownload(runId!, { influencer_id: avatarId! });
-                                setRerunJobId(job_id);
-                              } catch (err) {
-                                console.error("Retry download failed:", err);
-                              }
-                            }}
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            Retry failed
-                          </Button>
-                        )}
-                        {key === "vlm_scoring" && (stage.status === "completed" || (stage.status === "pending" && task.stages.candidate_filter.status === "completed")) && !rerunJobId && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 text-xs"
-                            onClick={() => setShowVlmRerunDialog(true)}
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            Re-score
-                          </Button>
-                        )}
-                        {key === "candidate_filter" && (stage.status === "completed" || stage.status === "failed" || (stage.status === "pending" && task.stages.download.status === "completed")) && !rerunJobId && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 text-xs"
-                            onClick={() => setShowFilterRerunDialog(true)}
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            Re-filter
-                          </Button>
-                        )}
-                        {/* Re-run progress indicator */}
-                        {rerunJobId && (() => {
-                          const stageToProgressKey: Record<string, string> = { download: "download", candidate_filter: "filter", vlm_scoring: "vlm" };
-                          const progressStage = stageToProgressKey[key];
-                          if (!progressStage) return null;
-                          const p = rerunJob.job?.progress ?? {};
-                          if (p.stage !== progressStage) return null;
-                          const current = (p.current as number) ?? 0;
-                          const total = (p.total as number) ?? 0;
-                          const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-                          const isRunning = p.status === "running";
-                          return (
-                            <div className="flex items-center gap-2.5 min-w-[180px]">
-                              <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin flex-shrink-0" />
-                              <div className="flex-1">
-                                <Progress value={isRunning && total > 0 ? pct : 100} className="h-1.5" />
-                              </div>
-                              <span className="text-xs text-slate-500 tabular-nums flex-shrink-0">
-                                {total > 0 ? `${current}/${total}` : "Processing..."}
-                              </span>
-                            </div>
-                          );
-                        })()}
-                        {key === "review" && stage.status === "completed" && task.stages.vlm_scoring.status === "completed" && !editingReview && (
-                          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setEditingReview(true)}>
-                            <Pencil className="w-3.5 h-3.5" />
-                            Edit Review
-                          </Button>
-                        )}
-                        {getStatusIcon(stage.status, "w-6 h-6")}
-                      </div>
-                    </div>
-                  </CardHeader>
-
-                  <CardContent>
-                    {stage.status !== "pending" && (
-                      <>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                          {stage.items_count !== undefined && (
-                            <div className="bg-slate-50 rounded-lg p-4">
-                              <div className="flex items-center gap-2 mb-1">
-                                <FileVideo className="w-4 h-4 text-purple-600" />
-                                <div className="text-xs font-medium text-slate-600">Items</div>
-                              </div>
-                              <div className="text-2xl font-bold text-purple-600">
-                                {stage.items_count}
-                              </div>
-                            </div>
-                          )}
-                          {stage.duration && (
-                            <div className="bg-slate-50 rounded-lg p-4">
-                              <div className="flex items-center gap-2 mb-1">
-                                <Clock className="w-4 h-4 text-blue-600" />
-                                <div className="text-xs font-medium text-slate-600">Duration</div>
-                              </div>
-                              <div className="text-2xl font-bold text-blue-600">
-                                {stage.duration}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        {stage.details && (
-                          <StageDetails details={stage.details} onPlay={handlePlayVideo} />
-                        )}
-
-                        {stage.videos && stage.videos.length > 0 && key !== "review" && (
-                          <StageVideoPreview
-                            videos={stage.videos}
-                            stageKey={key}
-                            totalCount={stage.items_count}
-                            onPlay={handlePlayVideo}
-                          />
-                        )}
-                      </>
-                    )}
-
-                    {/* Review panel: show interactive UI when VLM is done but review is pending */}
-                    {key === "review" && stage.status === "pending" && task.stages.vlm_scoring.status === "completed" && (
-                      <ReviewPanel
-                        vlmVideos={task.stages.vlm_scoring.videos ?? []}
-                        vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
-                        influencerId={avatarId!}
-                        runId={runId!}
-                        onComplete={refetchAll}
-                        onPlay={handlePlayVideo}
-                        vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
-                        rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
-                        initialReview={rawRun?.review?.videos}
-                      />
-                    )}
-
-                    {/* Completed review: video list with prompts (read-only or editable inline) */}
-                    {key === "review" && stage.status === "completed" && stage.videos && stage.videos.length > 0 && (
-                      <ReviewCompletedList
-                        videos={stage.videos}
-                        vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
-                        editing={editingReview}
-                        initialReview={rawRun?.review?.videos}
-                        influencerId={avatarId!}
-                        runId={runId!}
-                        onComplete={() => { setEditingReview(false); refetchAll(); }}
-                        onCancel={() => setEditingReview(false)}
-                        onPlay={handlePlayVideo}
-                        vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
-                        rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
-                      />
-                    )}
-
-                    {/* Generation panel: show controls when review is completed */}
-                    {key === "generation" && task.stages.review.status === "completed" && rawRun?.review?.videos && (
-                      <GenerationPanel
-                        reviewVideos={rawRun.review.videos}
-                        influencerId={avatarId!}
-                        selectedVideoUrls={
-                          Object.fromEntries(
-                            (rawRun?.platforms ?? []).flatMap((p) => {
-                              const dir = p.selected_dir || "";
-                              return (p.selected_videos ?? []).map((v) => [
-                                v.file_name,
-                                dir ? `${dir}/${v.file_name}` : v.file_name,
-                              ]);
-                            })
-                          )
-                        }
-                        onJobStarted={refetchAll}
-                        existingJobs={rawRun?.generation?.jobs}
-                        onPlayVideo={handlePlayVideo}
-                        onPreviewImage={(url, title) => setPreviewImage({ url, title })}
-                        referenceImageUrl={influencer?.reference_image_path ? `/files/${influencer.reference_image_path}` : undefined}
-                      />
-                    )}
-
-                    {stage.status === "pending" && !(
-                      (key === "review" && task.stages.vlm_scoring.status === "completed") ||
-                      (key === "generation" && task.stages.review.status === "completed")
-                    ) && (
-                      <div className="bg-slate-50 rounded-lg p-6 text-center">
-                        <AlertCircle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                        <p className="text-slate-500">
-                          {key === "review"
-                            ? "Review will be available after VLM scoring completes"
-                            : key === "generation"
-                              ? "Generation will start after review is complete"
-                              : "This stage is pending and will start after previous stages complete"}
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {!isLast && (
-                  <div className="flex justify-center py-2">
-                    <div className="w-0.5 h-6 bg-slate-300"></div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {/* Right: status badge + stage counter */}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <Badge className={`${getStatusColor(task.status)} text-xs px-2.5 py-0.5`}>
+              {task.status}
+            </Badge>
+            <span className="text-xs text-slate-500 font-medium">{completedStages}/{totalStages} stages</span>
+          </div>
         </div>
       </div>
 
+      {/* ========= MOBILE TAB BAR (visible < md) ========= */}
+      <div className="md:hidden flex overflow-x-auto border-b border-slate-200 bg-white/80 backdrop-blur-sm px-2 gap-0.5 scrollbar-thin">
+        {STAGE_KEYS.map((key) => {
+          const stage = task.stages[key];
+          const isActive = key === activeStage;
+          const StageIcon = stageIcons[key];
+          const statusDotColor =
+            stage.status === "completed" ? "bg-green-500" :
+            stage.status === "in-progress" ? "bg-blue-500" :
+            stage.status === "failed" ? "bg-red-500" :
+            "bg-slate-300";
+          return (
+            <button
+              key={key}
+              onClick={() => setActiveStage(key)}
+              className={`flex flex-col items-center gap-1 px-3 py-2 text-[10px] font-medium whitespace-nowrap flex-shrink-0 border-b-2 transition-colors ${
+                isActive
+                  ? "border-blue-500 text-blue-700"
+                  : "border-transparent text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              <div className="relative">
+                <StageIcon className={`w-4 h-4 ${isActive ? "text-blue-600" : "text-slate-400"}`} />
+                <div className={`absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${statusDotColor}`} />
+              </div>
+              <span>{stageNumbers[key]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ========= BODY: SIDEBAR + CONTENT ========= */}
+      <div className="flex min-h-[calc(100vh-56px)]">
+        {/* ========= LEFT SIDEBAR (hidden on mobile) ========= */}
+        <aside className="hidden md:flex flex-col w-56 flex-shrink-0 sticky top-[56px] max-h-[calc(100vh-56px)] overflow-y-auto bg-white/60 backdrop-blur-sm border-r border-slate-200/60">
+          <nav className="py-3 space-y-1">
+            {STAGE_KEYS.map((key) => {
+              const stage = task.stages[key];
+              const isActive = key === activeStage;
+
+              // Item count label
+              let countLabel: string | undefined;
+              if (stage.status === "in-progress") {
+                countLabel = "In progress";
+              } else if (stage.status === "pending") {
+                countLabel = "Pending";
+              } else if (stage.status === "failed") {
+                countLabel = "Failed";
+              } else if (stage.status === "lost") {
+                countLabel = "Lost";
+              } else if (stage.items_count !== undefined) {
+                const suffix = key === "vlm_scoring" ? " accepted" : " items";
+                countLabel = `${stage.items_count}${suffix}`;
+              }
+
+              return (
+                <button
+                  key={key}
+                  onClick={() => setActiveStage(key)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl mx-2 transition-all text-left ${
+                    isActive
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "hover:bg-slate-100"
+                  }`}
+                  style={{ width: "calc(100% - 16px)" }}
+                >
+                  <div className="flex-shrink-0">
+                    {isActive
+                      ? getStatusIconWhite(stage.status, "w-[18px] h-[18px]")
+                      : getStatusIcon(stage.status, "w-[18px] h-[18px]")
+                    }
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[10px] font-medium tabular-nums ${isActive ? "text-white/60" : "text-slate-400"}`}>
+                        {stageNumbers[key]}
+                      </span>
+                      <span className={`text-[13px] truncate ${isActive ? "font-semibold text-white" : "font-medium text-slate-700"}`}>
+                        {stageTitles[key]}
+                      </span>
+                    </div>
+                    {countLabel && (
+                      <span className={`text-[11px] leading-tight ${isActive ? "text-white/70" : "text-slate-400"}`}>{countLabel}</span>
+                    )}
+                  </div>
+                  {/* Compact re-run buttons inside sidebar items */}
+                  {key === "download" && (stage.status === "completed" || stage.status === "failed") && !rerunJobId && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          const { job_id } = await api.rerunDownload(runId!, { influencer_id: avatarId! });
+                          setRerunJobId(job_id);
+                          setActiveStage("download");
+                        } catch (err) {
+                          console.error("Retry download failed:", err);
+                        }
+                      }}
+                      className={`flex-shrink-0 p-1 rounded transition-colors ${isActive ? "hover:bg-white/20 text-white/70 hover:text-white" : "hover:bg-slate-200/60 text-slate-400 hover:text-slate-600"}`}
+                      title="Retry failed downloads"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {key === "candidate_filter" && (stage.status === "completed" || stage.status === "failed" || (stage.status === "pending" && task.stages.download.status === "completed")) && !rerunJobId && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowFilterRerunDialog(true);
+                        setActiveStage("candidate_filter");
+                      }}
+                      className={`flex-shrink-0 p-1 rounded transition-colors ${isActive ? "hover:bg-white/20 text-white/70 hover:text-white" : "hover:bg-slate-200/60 text-slate-400 hover:text-slate-600"}`}
+                      title="Re-run filter"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {key === "vlm_scoring" && (stage.status === "completed" || (stage.status === "pending" && task.stages.candidate_filter.status === "completed")) && !rerunJobId && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowVlmRerunDialog(true);
+                        setActiveStage("vlm_scoring");
+                      }}
+                      className={`flex-shrink-0 p-1 rounded transition-colors ${isActive ? "hover:bg-white/20 text-white/70 hover:text-white" : "hover:bg-slate-200/60 text-slate-400 hover:text-slate-600"}`}
+                      title="Re-run VLM scoring"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        {/* ========= MAIN CONTENT AREA ========= */}
+        <main className="flex-1 min-w-0 overflow-y-auto">
+          <div className="max-w-5xl mx-auto px-4 md:px-8 py-6">
+            {/* Stage content card with gradient header */}
+            <div className="rounded-2xl bg-white border border-slate-200/80 shadow-sm overflow-hidden">
+              {/* Top strip: colored gradient header */}
+              <div className={`px-6 py-5 ${gradientHeaderClass}`}>
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${stageIconBgClass}`}>
+                      <ActiveStageIcon className={`w-5 h-5 ${stageIconColorClass}`} />
+                    </div>
+                    <div>
+                      <h1 className="text-lg font-bold text-slate-900">
+                        Stage {activeStageIndex + 1}: {stageTitles[activeStage]}
+                      </h1>
+                      <p className="text-sm text-slate-500 mt-0.5 max-w-2xl">
+                        {stageDescriptions[activeStage]}
+                      </p>
+                      {/* Rerun progress inline below title */}
+                      {renderRerunProgress(activeStage) && (
+                        <div className="mt-2">{renderRerunProgress(activeStage)}</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {activeStage === "review" && activeStageData.status === "completed" && task.stages.vlm_scoring.status === "completed" && !editingReview && (
+                      <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setEditingReview(true)}>
+                        <Pencil className="w-3.5 h-3.5" />
+                        Edit Review
+                      </Button>
+                    )}
+                    {getStatusIcon(activeStageData.status, "w-5 h-5")}
+                  </div>
+                </div>
+              </div>
+
+              {/* Content body */}
+              <div className="px-6 py-6">
+                {/* Metrics row — compact inline strip */}
+                {activeStageData.status !== "pending" && (activeStageData.items_count !== undefined || activeStageData.duration) && (
+                  <div className="flex items-center gap-6 mb-6 pb-5 border-b border-slate-100">
+                    {activeStageData.items_count !== undefined && (
+                      <div className="flex items-center gap-2">
+                        <FileVideo className="w-4 h-4 text-slate-400" />
+                        <span className="text-2xl font-bold text-slate-900">{activeStageData.items_count}</span>
+                        <span className="text-xs text-slate-500 uppercase tracking-wider font-medium">items</span>
+                      </div>
+                    )}
+                    {activeStageData.duration && (
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-slate-400" />
+                        <span className="text-2xl font-bold text-slate-900">{activeStageData.duration}</span>
+                        <span className="text-xs text-slate-500 uppercase tracking-wider font-medium">duration</span>
+                      </div>
+                    )}
+                    <div className="ml-auto">
+                      <Badge className={`${getStatusColor(activeStageData.status)} text-xs px-2.5 py-0.5`}>
+                        {activeStageData.status}
+                      </Badge>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stage details and video previews */}
+                {activeStageData.status !== "pending" && (
+                  <>
+                    {activeStageData.details && (
+                      <StageDetails details={activeStageData.details} onPlay={handlePlayVideo} />
+                    )}
+
+                    {activeStageData.videos && activeStageData.videos.length > 0 && activeStage !== "review" && (
+                      <StageVideoPreview
+                        videos={activeStageData.videos}
+                        stageKey={activeStage}
+                        totalCount={activeStageData.items_count}
+                        onPlay={handlePlayVideo}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* Review panel: show interactive UI when VLM is done but review is pending */}
+                {activeStage === "review" && activeStageData.status === "pending" && task.stages.vlm_scoring.status === "completed" && (
+                  <ReviewPanel
+                    vlmVideos={task.stages.vlm_scoring.videos ?? []}
+                    vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
+                    influencerId={avatarId!}
+                    runId={runId!}
+                    onComplete={refetchAll}
+                    onPlay={handlePlayVideo}
+                    vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
+                    rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
+                    initialReview={rawRun?.review?.videos}
+                  />
+                )}
+
+                {/* Completed review: video list with prompts (read-only or editable inline) */}
+                {activeStage === "review" && activeStageData.status === "completed" && activeStageData.videos && activeStageData.videos.length > 0 && (
+                  <ReviewCompletedList
+                    videos={activeStageData.videos}
+                    vlmAccepted={(task.stages.vlm_scoring.details?.accepted_items as VlmAccepted[]) ?? []}
+                    editing={editingReview}
+                    initialReview={rawRun?.review?.videos}
+                    influencerId={avatarId!}
+                    runId={runId!}
+                    onComplete={() => { setEditingReview(false); refetchAll(); }}
+                    onCancel={() => setEditingReview(false)}
+                    onPlay={handlePlayVideo}
+                    vlmRejectedItems={(task.stages.vlm_scoring.details?.rejected_items as VlmVideoDetail[]) ?? []}
+                    rejectedVideoUrls={(task.stages.vlm_scoring.details?.rejected_video_urls as Record<string, string>) ?? {}}
+                  />
+                )}
+
+                {/* Generation panel: show controls when review is completed */}
+                {activeStage === "generation" && task.stages.review.status === "completed" && rawRun?.review?.videos && (
+                  <GenerationPanel
+                    reviewVideos={rawRun.review.videos}
+                    influencerId={avatarId!}
+                    selectedVideoUrls={
+                      Object.fromEntries(
+                        (rawRun?.platforms ?? []).flatMap((p) => {
+                          const dir = p.selected_dir || "";
+                          return (p.selected_videos ?? []).map((v) => [
+                            v.file_name,
+                            dir ? `${dir}/${v.file_name}` : v.file_name,
+                          ]);
+                        })
+                      )
+                    }
+                    onJobStarted={refetchAll}
+                    existingJobs={rawRun?.generation?.jobs}
+                    onPlayVideo={handlePlayVideo}
+                    onPreviewImage={(url, title) => setPreviewImage({ url, title })}
+                    referenceImageUrl={influencer?.reference_image_path ? `/files/${influencer.reference_image_path}` : undefined}
+                  />
+                )}
+
+                {/* Pending stage state — dashed circle with stage icon */}
+                {activeStageData.status === "pending" && !(
+                  (activeStage === "review" && task.stages.vlm_scoring.status === "completed") ||
+                  (activeStage === "generation" && task.stages.review.status === "completed")
+                ) && (
+                  <div className="py-12 text-center">
+                    <div className="w-12 h-12 rounded-full border-2 border-dashed border-slate-200 flex items-center justify-center mx-auto mb-3">
+                      <ActiveStageIcon className="w-6 h-6 text-slate-300" />
+                    </div>
+                    <p className="text-slate-400 text-sm mt-3">
+                      {activeStage === "review"
+                        ? "Waiting for VLM scoring to complete"
+                        : activeStage === "generation"
+                          ? "Waiting for review to complete"
+                          : "Waiting for previous stage to complete"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      {/* ========= MODALS ========= */}
       {playingVideo && (
         <VideoPlayerModal
           url={playingVideo.url}

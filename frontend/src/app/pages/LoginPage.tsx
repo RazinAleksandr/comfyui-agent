@@ -302,6 +302,25 @@ export default function LoginPage() {
               </span>
             ))}
           </motion.div>
+
+          {/* Hero sign-in CTA */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 1.0 }}
+            className="flex flex-col items-center mt-2"
+          >
+            <button
+              onClick={() => setShowLogin(true)}
+              className="flex items-center gap-2.5 px-8 py-4 rounded-2xl text-base font-semibold text-white bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-400 hover:to-pink-400 shadow-lg shadow-purple-500/30 transition-all"
+            >
+              <LogIn className="w-5 h-5" />
+              Sign In
+            </button>
+            <p className="text-sm text-purple-300/50 mt-3">
+              Already using the platform? Sign in to your workspace.
+            </p>
+          </motion.div>
         </div>
       </main>
 

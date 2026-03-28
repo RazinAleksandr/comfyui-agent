@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { Badge } from "../components/ui/badge";
+import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
 import {
@@ -16,125 +15,242 @@ import {
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
-import { Sparkles, Plus, Loader2, LogOut } from "lucide-react";
+import { Sparkles, Plus, Loader2, LogOut, ArrowRight, User } from "lucide-react";
 import { useInfluencers } from "../api/hooks";
 import { api } from "../api/client";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { useAuth } from "../auth/AuthContext";
+import type { InfluencerOut } from "../api/types";
+
+/* ─────────────────────────── Influencer Card ─────────────────────────── */
+
+function InfluencerCard({ influencer }: { influencer: InfluencerOut }) {
+  return (
+    <Link
+      to={`/avatar/${influencer.influencer_id}`}
+      className="group block"
+    >
+      <div className="relative rounded-2xl overflow-hidden bg-white border border-slate-200/80 shadow-sm transition-all duration-300 hover:shadow-xl hover:-translate-y-1.5">
+        {/* ── Portrait ── */}
+        <div className="relative aspect-[3/4] overflow-hidden bg-gradient-to-br from-blue-100 via-slate-100 to-blue-50">
+          <ImageWithFallback
+            src={influencer.profile_image_url ?? ""}
+            alt={influencer.name}
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+          {/* Gradient overlay at bottom for text readability */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+
+          {/* ── Content overlay on image ── */}
+          <div className="absolute bottom-0 left-0 right-0 p-5">
+            {/* Handle badge */}
+            <span className="inline-block px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-sm text-[11px] font-medium text-white/90 tracking-wide mb-2.5">
+              @{influencer.influencer_id}
+            </span>
+
+            {/* Name */}
+            <h3 className="text-xl font-bold text-white leading-tight mb-1.5 tracking-tight">
+              {influencer.name}
+            </h3>
+
+            {/* Description */}
+            {influencer.description && (
+              <p className="text-sm text-white/75 leading-relaxed line-clamp-2 mb-3">
+                {influencer.description}
+              </p>
+            )}
+
+            {/* Hashtags */}
+            {influencer.hashtags && influencer.hashtags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {influencer.hashtags.slice(0, 3).map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-2 py-0.5 rounded-full bg-white/15 backdrop-blur-sm text-[11px] font-medium text-white/80"
+                  >
+                    #{tag}
+                  </span>
+                ))}
+                {influencer.hashtags.length > 3 && (
+                  <span className="px-2 py-0.5 rounded-full bg-white/15 backdrop-blur-sm text-[11px] font-medium text-white/80">
+                    +{influencer.hashtags.length - 3}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── Hover arrow indicator ── */}
+          <div className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center opacity-0 translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300">
+            <ArrowRight className="w-4 h-4 text-white" />
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+/* ─────────────────────────── Loading Skeleton ─────────────────────────── */
+
+function InfluencerSkeleton() {
+  return (
+    <div className="rounded-2xl overflow-hidden bg-white border border-slate-200/80 shadow-sm">
+      <div className="aspect-[3/4] relative">
+        <Skeleton className="absolute inset-0 w-full h-full" />
+        <div className="absolute bottom-0 left-0 right-0 p-5 space-y-3">
+          <Skeleton className="h-4 w-16 rounded-full opacity-40" />
+          <Skeleton className="h-6 w-3/4 opacity-40" />
+          <Skeleton className="h-4 w-full opacity-40" />
+          <div className="flex gap-1.5">
+            <Skeleton className="h-5 w-14 rounded-full opacity-40" />
+            <Skeleton className="h-5 w-14 rounded-full opacity-40" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Create New Card ─────────────────────────── */
+
+function CreateNewCard() {
+  return (
+    <div className="relative rounded-2xl overflow-hidden border-2 border-dashed border-blue-300/60 bg-gradient-to-br from-blue-50/80 via-white to-blue-50/40 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1.5 hover:border-blue-400/80 group">
+      <div className="aspect-[3/4] flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center mb-5 shadow-lg shadow-blue-500/25 transition-transform duration-300 group-hover:scale-110">
+          <Plus className="w-7 h-7 text-white" />
+        </div>
+        <p className="text-lg font-bold text-slate-800 mb-1.5">Create Avatar</p>
+        <p className="text-sm text-slate-500 leading-relaxed max-w-[180px]">
+          Add a new AI influencer to your studio
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Home Page ─────────────────────────── */
 
 export default function HomePage() {
   const { data: influencers, loading, error, refetch } = useInfluencers();
   const [dialogOpen, setDialogOpen] = useState(false);
   const { user, logout } = useAuth();
 
+  const count = influencers?.length ?? 0;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
-      <div className="container mx-auto px-4 py-8">
-        <div className="absolute top-4 right-4 flex items-center gap-2">
-          <span className="text-sm text-slate-500">{user?.display_name}</span>
-          <Button variant="ghost" size="sm" onClick={logout} className="text-slate-500 hover:text-slate-700">
-            <LogOut className="w-4 h-4" />
-          </Button>
-        </div>
-        <div className="mb-12 text-center">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <Sparkles className="w-10 h-10 text-purple-600" />
-            <h1 className="text-4xl font-bold">AI Avatar Studio</h1>
+      {/* ── Header ── */}
+      <header className="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-slate-200/60">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          {/* Brand */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
+              <Sparkles className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex flex-col">
+              <span className="text-lg font-bold tracking-tight text-slate-900">
+                AI Avatar Studio
+              </span>
+              <span className="text-[11px] text-slate-400 font-normal hidden md:block">Content Studio</span>
+            </div>
           </div>
-          <p className="text-lg text-slate-600">
-            Select an AI avatar to start content generation
+
+          {/* User */}
+          <div className="flex items-center gap-3">
+            <span className="bg-slate-100 rounded-full px-3 py-1 text-sm text-slate-600 font-medium hidden sm:flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5 text-slate-400" />
+              {user?.display_name}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={logout}
+              className="text-slate-400 hover:text-slate-600"
+            >
+              <LogOut className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Main content ── */}
+      <main className="max-w-7xl mx-auto px-6 py-10">
+        {/* Hero section */}
+        <div className="mb-10">
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
+            Your Talent Roster
+          </h1>
+          <p className="text-base text-slate-500 max-w-lg">
+            {loading
+              ? "Loading your AI influencers..."
+              : count > 0
+                ? `${count} AI influencer${count !== 1 ? "s" : ""} ready for content generation`
+                : "Create your first AI influencer to get started"
+            }
           </p>
         </div>
 
+        {/* Error state */}
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-center">
-            Failed to load influencers: {error}
-            <Button variant="ghost" size="sm" onClick={refetch} className="ml-2">
-              Retry
-            </Button>
-          </div>
+          <Card className="mb-8 border-red-200 bg-red-50/50">
+            <CardContent className="py-4 flex items-center justify-between">
+              <p className="text-sm text-red-700">
+                Failed to load influencers: {error}
+              </p>
+              <Button variant="outline" size="sm" onClick={refetch} className="text-red-700 border-red-200 hover:bg-red-100">
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        {/* Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5">
           {loading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <Card key={i} className="overflow-hidden">
-                  <Skeleton className="aspect-square w-full" />
-                  <CardHeader>
-                    <Skeleton className="h-6 w-3/4" />
-                    <Skeleton className="h-4 w-full mt-2" />
-                    <Skeleton className="h-4 w-2/3 mt-1" />
-                  </CardHeader>
-                </Card>
+            ? Array.from({ length: 5 }).map((_, i) => (
+                <InfluencerSkeleton key={i} />
               ))
             : influencers?.map((influencer) => (
-                <Link
-                  key={influencer.influencer_id}
-                  to={`/avatar/${influencer.influencer_id}`}
-                  className="group h-full"
-                >
-                  <Card className="overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 h-full">
-                    <div className="aspect-square overflow-hidden bg-gradient-to-br from-purple-100 to-pink-100">
-                      <ImageWithFallback
-                        src={influencer.profile_image_url ?? ""}
-                        alt={influencer.name}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
-                      />
-                    </div>
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        {influencer.name}
-                        <Badge variant="outline" className="text-xs">
-                          @{influencer.influencer_id}
-                        </Badge>
-                      </CardTitle>
-                      <CardDescription className="line-clamp-3">
-                        {influencer.description}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="flex flex-wrap gap-1.5">
-                        {influencer.hashtags?.slice(0, 4).map((tag) => (
-                          <Badge key={tag} variant="secondary" className="text-xs">
-                            #{tag}
-                          </Badge>
-                        ))}
-                        {(influencer.hashtags?.length ?? 0) > 4 && (
-                          <Badge variant="secondary" className="text-xs">
-                            +{(influencer.hashtags?.length ?? 0) - 4}
-                          </Badge>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </Link>
+                <InfluencerCard key={influencer.influencer_id} influencer={influencer} />
               ))}
 
-          {/* Create New Influencer Card */}
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Card className="overflow-hidden border-dashed border-2 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 flex items-center justify-center h-full">
-                <CardContent className="text-center py-8">
-                  <div className="w-16 h-16 rounded-full bg-purple-100 flex items-center justify-center mx-auto mb-4">
-                    <Plus className="w-8 h-8 text-purple-600" />
-                  </div>
-                  <p className="font-semibold text-slate-700">Create New Avatar</p>
-                  <p className="text-sm text-slate-500 mt-1">Add a new AI influencer</p>
-                </CardContent>
-              </Card>
-            </DialogTrigger>
-            <CreateInfluencerDialog
-              onCreated={() => {
-                setDialogOpen(false);
-                refetch();
-              }}
-            />
-          </Dialog>
+          {/* Create New Influencer */}
+          {!loading && (
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+              <DialogTrigger asChild>
+                <CreateNewCard />
+              </DialogTrigger>
+              <CreateInfluencerDialog
+                onCreated={() => {
+                  setDialogOpen(false);
+                  refetch();
+                }}
+              />
+            </Dialog>
+          )}
         </div>
-      </div>
+
+        {/* Empty state (no influencers, not loading, no error) */}
+        {!loading && !error && count === 0 && (
+          <div className="text-center mt-16">
+            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center mx-auto mb-6">
+              <Sparkles className="w-10 h-10 text-blue-500" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-800 mb-2">
+              No influencers yet
+            </h2>
+            <p className="text-slate-500 mb-6 max-w-md mx-auto">
+              Your studio is empty. Create your first AI avatar to begin generating content.
+            </p>
+          </div>
+        )}
+      </main>
     </div>
   );
 }
+
+/* ─────────────────────────── Create Influencer Dialog ─────────────────────────── */
 
 function CreateInfluencerDialog({ onCreated }: { onCreated: () => void }) {
   const [saving, setSaving] = useState(false);

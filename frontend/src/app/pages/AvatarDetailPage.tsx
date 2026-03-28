@@ -104,6 +104,42 @@ function getStatusColor(status: string) {
   }
 }
 
+/* ── Stage color helpers for the pipeline flow ── */
+
+const stageColorClasses: Record<string, { bg: string; text: string }> = {
+  trend_ingestion: { bg: "bg-blue-100", text: "text-blue-600" },
+  download: { bg: "bg-blue-100", text: "text-blue-600" },
+  candidate_filter: { bg: "bg-blue-100", text: "text-blue-600" },
+  vlm_scoring: { bg: "bg-blue-100", text: "text-blue-600" },
+  review: { bg: "bg-blue-100", text: "text-blue-600" },
+  generation: { bg: "bg-blue-100", text: "text-blue-600" },
+};
+
+/* ── Stage pill color helper for task cards ── */
+
+function getStagePillColors(status: string) {
+  switch (status) {
+    case "completed":
+      return { bg: "bg-green-50", text: "text-green-700", bold: "text-green-700", dot: "bg-green-500" };
+    case "in-progress":
+      return { bg: "bg-blue-50", text: "text-blue-700", bold: "text-blue-700", dot: "bg-blue-500" };
+    case "failed":
+      return { bg: "bg-red-50", text: "text-red-700", bold: "text-red-700", dot: "bg-red-500" };
+    default:
+      return { bg: "bg-slate-50", text: "text-slate-400", bold: "text-slate-400", dot: "bg-slate-300" };
+  }
+}
+
+const stageKeysInOrder = ["trend_ingestion", "download", "candidate_filter", "vlm_scoring", "review", "generation"] as const;
+const stageShortNames: Record<string, string> = {
+  trend_ingestion: "Ingest",
+  download: "Download",
+  candidate_filter: "Filter",
+  vlm_scoring: "VLM",
+  review: "Review",
+  generation: "Gen",
+};
+
 export default function AvatarDetailPage() {
   const { avatarId } = useParams();
   const navigate = useNavigate();
@@ -178,31 +214,40 @@ export default function AvatarDetailPage() {
 
   if (loadingInf) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <div className="container mx-auto px-4 py-8">
-          <Skeleton className="h-8 w-40 mb-6" />
-          <Card className="mb-8">
-            <CardHeader>
-              <div className="flex gap-6">
-                <Skeleton className="w-32 h-32 rounded-lg" />
-                <div className="flex-1 space-y-3">
-                  <Skeleton className="h-8 w-64" />
-                  <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-3/4" />
-                </div>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
+        {/* Header skeleton */}
+        <header className="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-slate-200/60">
+          <div className="max-w-7xl mx-auto px-6 h-16 flex items-center gap-4">
+            <Skeleton className="w-8 h-8 rounded-lg" />
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="h-4 w-24 ml-4" />
+          </div>
+        </header>
+        <main className="max-w-7xl mx-auto px-6 py-10">
+          <div className="flex gap-12">
+            <Skeleton className="w-80 h-[420px] rounded-3xl flex-shrink-0" />
+            <div className="flex-1 space-y-4 pt-2">
+              <Skeleton className="h-6 w-24 rounded-full" />
+              <Skeleton className="h-10 w-64" />
+              <Skeleton className="h-5 w-full max-w-lg" />
+              <Skeleton className="h-5 w-3/4 max-w-lg" />
+              <div className="flex gap-2 pt-2">
+                <Skeleton className="h-6 w-16 rounded-full" />
+                <Skeleton className="h-6 w-16 rounded-full" />
+                <Skeleton className="h-6 w-16 rounded-full" />
               </div>
-            </CardHeader>
-          </Card>
-        </div>
+            </div>
+          </div>
+        </main>
       </div>
     );
   }
 
   if (!influencer) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
         <div className="text-center">
-          <h2 className="text-2xl font-bold mb-4">Avatar not found</h2>
+          <h2 className="text-2xl font-bold mb-4 text-slate-900">Avatar not found</h2>
           <Link to="/">
             <Button>
               <ArrowLeft className="w-4 h-4 mr-2" />
@@ -218,123 +263,164 @@ export default function AvatarDetailPage() {
   const newestTaskId = tasks && tasks.length > 0 ? tasks[0].id : null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="container mx-auto px-4 py-8">
-        <Link to="/">
-          <Button variant="ghost" className="mb-6">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Avatars
-          </Button>
-        </Link>
-
-        {/* Avatar Profile Section */}
-        <Card className="mb-8">
-          <CardHeader>
-            <div className="flex flex-col md:flex-row gap-6">
-              <div className="w-32 h-32 rounded-lg overflow-hidden flex-shrink-0 bg-gradient-to-br from-purple-100 to-pink-100">
-                <ImageWithFallback
-                  src={influencer.profile_image_url ?? ""}
-                  alt={influencer.name}
-                  className="w-full h-full object-cover"
-                />
+    <div className="min-h-screen bg-gradient-to-br from-blue-50/80 via-slate-50 to-blue-100/60">
+      {/* ── Frosted Glass Header ── */}
+      <header className="sticky top-0 z-30 backdrop-blur-md bg-white/70 border-b border-slate-200/60">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          {/* Left: Brand + breadcrumb */}
+          <div className="flex items-center gap-4">
+            <Link to="/" className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
+                <Sparkles className="w-4 h-4 text-white" />
               </div>
-              <div className="flex-1">
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <CardTitle className="text-3xl mb-2">{influencer.name}</CardTitle>
-                    <Badge variant="outline" className="mb-3">
-                      @{influencer.influencer_id}
-                    </Badge>
-                  </div>
-                  <div className="flex gap-2">
-                    <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline" size="sm" className="gap-1.5">
-                          <Pencil className="w-4 h-4" />
-                          Edit
-                        </Button>
-                      </DialogTrigger>
-                      <EditInfluencerDialog
-                        influencer={influencer}
-                        onSaved={() => {
-                          setEditDialogOpen(false);
-                          refetchInfluencer();
-                        }}
-                      />
-                    </Dialog>
-                    <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline" size="sm" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200">
-                          <Trash2 className="w-4 h-4" />
-                          Delete
-                        </Button>
-                      </DialogTrigger>
-                      <DeleteInfluencerDialog
-                        influencer={influencer}
-                        onDeleted={() => {
-                          setDeleteDialogOpen(false);
-                          navigate("/");
-                        }}
-                      />
-                    </Dialog>
-                  </div>
-                </div>
-                <CardDescription className="text-base mb-4">
-                  {influencer.description}
-                </CardDescription>
-                <div className="flex flex-wrap gap-2">
-                  {influencer.hashtags?.map((tag) => (
-                    <Badge key={tag} variant="secondary">
-                      #{tag}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
+              <span className="text-lg font-bold tracking-tight text-slate-900">
+                AI Avatar Studio
+              </span>
+            </Link>
+            <div className="flex items-center gap-2 text-sm">
+              <Link to="/" className="text-slate-400 hover:text-slate-600 transition-colors font-medium">
+                Studio
+              </Link>
+              <span className="text-slate-300">/</span>
+              <span className="text-slate-900 font-medium">
+                {influencer.name}
+              </span>
             </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
+          </div>
+
+          {/* Right: Edit / Delete */}
+          <div className="flex items-center gap-2">
+            <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1.5 text-slate-600 border-slate-200">
+                  <Pencil className="w-3.5 h-3.5" />
+                  Edit
+                </Button>
+              </DialogTrigger>
+              <EditInfluencerDialog
+                influencer={influencer}
+                onSaved={() => {
+                  setEditDialogOpen(false);
+                  refetchInfluencer();
+                }}
+              />
+            </Dialog>
+            <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200">
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </Button>
+              </DialogTrigger>
+              <DeleteInfluencerDialog
+                influencer={influencer}
+                onDeleted={() => {
+                  setDeleteDialogOpen(false);
+                  navigate("/");
+                }}
+              />
+            </Dialog>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Main Content ── */}
+      <main className="max-w-7xl mx-auto px-6 py-10 space-y-12">
+
+        {/* ── Hero Profile Section ── */}
+        <section className="flex flex-col md:flex-row gap-10 md:gap-12">
+          {/* Large Portrait */}
+          <div className="w-72 md:w-80 flex-shrink-0">
+            <div className="aspect-[3/4] rounded-3xl overflow-hidden bg-gradient-to-br from-blue-100 via-slate-100 to-blue-50 shadow-lg shadow-slate-200/50">
+              <ImageWithFallback
+                src={influencer.profile_image_url ?? ""}
+                alt={influencer.name}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          </div>
+
+          {/* Profile Info */}
+          <div className="flex-1 pt-2 space-y-4">
+            {/* Handle badge */}
+            <span className="inline-flex items-center px-3 py-1 rounded-full bg-blue-50 border border-blue-200/50 text-xs font-medium text-blue-600 tracking-wide">
+              @{influencer.influencer_id}
+            </span>
+
+            {/* Name */}
+            <h1 className="text-4xl font-bold tracking-tight text-slate-900 leading-tight">
+              {influencer.name}
+            </h1>
+
+            {/* Description */}
+            {influencer.description && (
+              <p className="text-base text-slate-500 leading-relaxed max-w-xl">
+                {influencer.description}
+              </p>
+            )}
+
+            {/* Hashtags */}
+            {influencer.hashtags && influencer.hashtags.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {influencer.hashtags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-2.5 py-1 rounded-full bg-slate-100 text-xs font-medium text-slate-600"
+                  >
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Info Blocks: Appearance + Video Requirements */}
+            <div className="space-y-2 pt-2">
               {influencer.appearance_description && (
-                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                  <h4 className="font-semibold text-purple-900 mb-2 flex items-center gap-2">
-                    <Sparkles className="w-4 h-4" />
-                    Appearance Description
-                  </h4>
-                  <p className="text-sm text-purple-800">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-slate-400" />
+                    <h4 className="text-xs tracking-wider text-slate-500 uppercase font-medium">
+                      Appearance
+                    </h4>
+                  </div>
+                  <p className="text-sm text-slate-700 leading-relaxed">
                     {influencer.appearance_description}
                   </p>
                 </div>
               )}
               {influencer.video_suggestions_requirement && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                  <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
-                    <Eye className="w-4 h-4" />
-                    Video Selection Requirements
-                  </h4>
-                  <p className="text-sm text-amber-800">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Eye className="w-3.5 h-3.5 text-slate-400" />
+                    <h4 className="text-xs tracking-wider text-slate-500 uppercase font-medium">
+                      Video Requirements
+                    </h4>
+                  </div>
+                  <p className="text-sm text-slate-700 leading-relaxed">
                     {influencer.video_suggestions_requirement}
                   </p>
                 </div>
               )}
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
-        {/* Generated Content */}
+        {/* ── Generated Content ── */}
         {loadingContent ? (
-          <div className="mb-8">
-            <Skeleton className="h-8 w-48 mb-4" />
+          <section>
+            <Skeleton className="h-7 w-48 mb-2" />
+            <Skeleton className="h-4 w-64 mb-5" />
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="aspect-[9/16] rounded-xl" />
+                <Skeleton key={i} className="aspect-[9/16] rounded-2xl" />
               ))}
             </div>
-          </div>
+          </section>
         ) : (
-          <div className="mb-8">
-            <div className="mb-4">
-              <h2 className="text-2xl font-bold mb-2">Generated Content</h2>
-              <p className="text-slate-600">
+          <section>
+            <div className="mb-5">
+              <h2 className="text-xl font-bold text-slate-900 mb-1">Generated Content</h2>
+              <p className="text-sm text-slate-500">
                 {generatedContent.length} video{generatedContent.length !== 1 ? "s" : ""} generated across all pipeline runs
               </p>
             </div>
@@ -343,7 +429,7 @@ export default function AvatarDetailPage() {
                 {generatedContent.map((item) => (
                   <div
                     key={`${item.run_id}-${item.file_name}`}
-                    className="group relative rounded-xl overflow-hidden bg-black aspect-[9/16] cursor-pointer shadow-md hover:shadow-xl transition-shadow"
+                    className="group relative rounded-2xl overflow-hidden bg-black aspect-[9/16] cursor-pointer shadow-md hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5"
                     onClick={() => setPlayingVideo(item.video_url)}
                   >
                     <video
@@ -394,9 +480,12 @@ export default function AvatarDetailPage() {
                 ))}
               </div>
             ) : (
-              <Separator />
+              <div className="rounded-2xl border border-dashed border-slate-200 py-12 text-center">
+                <Sparkles className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-sm text-slate-400">No generated content yet</p>
+              </div>
             )}
-          </div>
+          </section>
         )}
 
         {/* Video Playback Modal */}
@@ -413,75 +502,66 @@ export default function AvatarDetailPage() {
           </DialogContent>
         </Dialog>
 
-        {/* Content Generation Pipeline */}
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold mb-2">Content Generation Pipeline</h2>
-          <p className="text-slate-600 mb-4">
-            Six-stage AI workflow from trend discovery to final content
-          </p>
-          <Separator />
-        </div>
+        {/* ── Content Generation Pipeline ── */}
+        <section>
+          <div className="mb-5">
+            <h2 className="text-xl font-bold text-slate-900 mb-1">Content Generation Pipeline</h2>
+            <p className="text-sm text-slate-500">
+              Six-stage AI workflow from trend discovery to final content
+            </p>
+          </div>
 
-        {/* Pipeline Stages Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-          {Object.entries(stageIcons).map(([key, Icon]) => {
-            const isConfigurable = key === "trend_ingestion" || key === "candidate_filter" || key === "vlm_scoring" || key === "review" || key === "generation";
-            return (
-              <Card
-                key={key}
-                className={`transition-shadow flex flex-col ${isConfigurable ? "cursor-pointer hover:shadow-md" : ""}`}
-                onClick={isConfigurable ? () => setSettingsDialog(key) : undefined}
-              >
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-purple-100">
-                        <Icon className="w-5 h-5 text-purple-600" />
-                      </div>
-                      <CardTitle className="text-lg">
-                        {stageTitles[key as keyof typeof stageTitles]}
-                      </CardTitle>
+          {/* Pipeline Stages — 3×2 Grid */}
+          <div className="grid grid-cols-3 gap-4">
+            {stageKeysInOrder.map((key) => {
+              const Icon = stageIcons[key];
+              const isConfigurable = key === "trend_ingestion" || key === "candidate_filter" || key === "vlm_scoring" || key === "review" || key === "generation";
+              const colors = stageColorClasses[key];
+
+              return (
+                <div
+                  key={key}
+                  className={`rounded-xl border border-slate-200 bg-white p-4 transition-all group ${isConfigurable ? "cursor-pointer hover:shadow-md hover:border-blue-200" : "cursor-default"}`}
+                  onClick={isConfigurable ? () => setSettingsDialog(key) : undefined}
+                >
+                  {/* Top row: icon + name + gear */}
+                  <div className="flex items-center gap-3">
+                    <div className={`w-12 h-12 rounded-full ${colors.bg} flex items-center justify-center flex-shrink-0`}>
+                      <Icon className={`w-5 h-5 ${colors.text}`} />
                     </div>
-                    {isConfigurable && <Settings2 className="w-4 h-4 text-slate-400 flex-shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <span className="font-semibold text-slate-800 text-sm">
+                        {stageTitles[key]}
+                      </span>
+                    </div>
+                    {isConfigurable && (
+                      <Settings2 className="w-4 h-4 text-slate-300 group-hover:text-blue-400 transition-colors flex-shrink-0" />
+                    )}
                   </div>
-                </CardHeader>
-                <CardContent className="flex-1 flex flex-col">
-                  <p className="text-sm text-slate-600 mb-3">
-                    {stageDescriptions[key as keyof typeof stageDescriptions]}
+
+                  {/* Description */}
+                  <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed">
+                    {stageDescriptions[key]}
                   </p>
-                  <div className="mt-auto pt-2 border-t text-xs text-slate-500 space-y-0.5">
+
+                  {/* Config summary */}
+                  <div className="text-xs text-slate-600 mt-3 pt-3 border-t border-slate-100">
                     {key === "trend_ingestion" && (
-                      <>
-                        <div>Platforms: <span className="font-medium text-slate-700">{[tiktok && "TikTok", instagram && "Instagram"].filter(Boolean).join(", ") || "none"}</span></div>
-                        <div>Limit: <span className="font-medium text-slate-700">{limit}</span></div>
-                        {hashtags && <div>Hashtags: <span className="font-medium text-slate-700">{hashtags}</span></div>}
-                      </>
+                      <>Platforms: {[tiktok && "TikTok", instagram && "Instagram"].filter(Boolean).join(", ") || "none"} &middot; Limit: {limit}</>
                     )}
-                    {key === "candidate_filter" && (
-                      <div>Top K: <span className="font-medium text-slate-700">{filterTopK}</span></div>
-                    )}
-                    {key === "vlm_scoring" && (
-                      <div>Max videos: <span className="font-medium text-slate-700">{vlmMaxVideos}</span></div>
-                    )}
-                    {key === "review" && (
-                      <div>Auto-review: <span className="font-medium text-slate-700">{autoReview ? "yes" : "no"}</span></div>
-                    )}
-                    {key === "download" && (
-                      <div>Mode: <span className="font-medium text-slate-700">yt-dlp</span></div>
-                    )}
+                    {key === "download" && "Engine: yt-dlp"}
+                    {key === "candidate_filter" && `Top K: ${filterTopK}`}
+                    {key === "vlm_scoring" && `Max videos: ${vlmMaxVideos}`}
+                    {key === "review" && (autoReview ? "Mode: Auto (AI captions)" : "Mode: Manual")}
                     {key === "generation" && (
-                      <>
-                        <div>Workflow: <span className="font-medium text-slate-700">wan_animate</span></div>
-                        <div>Align reference: <span className="font-medium text-slate-700">{alignReference ? "yes" : "no"}</span></div>
-                        {alignReference && <div>Close-up: <span className="font-medium text-slate-700">{alignCloseUp ? "yes" : "no"}</span></div>}
-                      </>
+                      <>Ref: {alignReference ? "aligned" : "direct"}{alignReference && alignCloseUp ? " + close-up" : ""}</>
                     )}
                   </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
 
         {/* Stage settings dialogs */}
         <Dialog open={settingsDialog === "trend_ingestion"} onOpenChange={(open) => !open && setSettingsDialog(null)}>
@@ -588,136 +668,139 @@ export default function AvatarDetailPage() {
           </DialogContent>
         </Dialog>
 
-        {/* Generation Tasks */}
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold mb-2">Generation Tasks</h2>
-            <p className="text-slate-600">
+        {/* ── Start Pipeline CTA Banner ── */}
+        <Dialog open={pipelineDialogOpen} onOpenChange={setPipelineDialogOpen}>
+          <DialogTrigger asChild>
+            <div className="rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 text-white px-8 py-5 flex items-center justify-between cursor-pointer hover:from-blue-700 hover:to-blue-600 transition-all shadow-lg shadow-blue-500/20">
+              <div className="flex items-center gap-4">
+                <Play className="w-7 h-7 flex-shrink-0" />
+                <div>
+                  <p className="font-bold text-lg">Ready to generate content?</p>
+                  <p className="text-blue-100 text-sm mt-0.5">Run the full 6-stage pipeline for {influencer.name}</p>
+                </div>
+              </div>
+              <Button className="bg-white text-blue-600 hover:bg-blue-50 shadow-md font-semibold px-6">
+                Start Pipeline
+              </Button>
+            </div>
+          </DialogTrigger>
+          <StartPipelineConfirm
+            influencerId={influencer.influencer_id}
+            tiktok={tiktok}
+            instagram={instagram}
+            limit={limit}
+            hashtags={hashtags}
+            filterTopK={filterTopK}
+            vlmMaxVideos={vlmMaxVideos}
+            autoReview={autoReview}
+            alignReference={alignReference}
+            alignCloseUp={alignCloseUp}
+            defaultSources={defaultSources}
+            onStarted={(jobId) => {
+              setPipelineDialogOpen(false);
+              setActiveJobId(jobId);
+            }}
+          />
+        </Dialog>
+
+        {/* ── Generation Tasks ── */}
+        <section>
+          <div className="mb-5">
+            <h2 className="text-xl font-bold text-slate-900 mb-1">Generation Tasks</h2>
+            <p className="text-sm text-slate-500">
               Click on a task to view detailed stage results
             </p>
           </div>
-          <Dialog open={pipelineDialogOpen} onOpenChange={setPipelineDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2">
-                <Play className="w-4 h-4" />
-                Start Pipeline
-              </Button>
-            </DialogTrigger>
-            <StartPipelineConfirm
-              influencerId={influencer.influencer_id}
-              tiktok={tiktok}
-              instagram={instagram}
-              limit={limit}
-              hashtags={hashtags}
-              filterTopK={filterTopK}
-              vlmMaxVideos={vlmMaxVideos}
-              autoReview={autoReview}
-              alignReference={alignReference}
-              alignCloseUp={alignCloseUp}
-              defaultSources={defaultSources}
-              onStarted={(jobId) => {
-                setPipelineDialogOpen(false);
-                setActiveJobId(jobId);
-              }}
-            />
-          </Dialog>
-        </div>
-        <Separator className="mb-6" />
 
-        {activeJobId && activeJob && (
-          <LiveTaskCard job={activeJob} isDone={jobDone} />
-        )}
+          {activeJobId && activeJob && (
+            <LiveTaskCard job={activeJob} isDone={jobDone} />
+          )}
 
-        <div className="space-y-4">
-          {loadingTasks ? (
-            Array.from({ length: 2 }).map((_, i) => (
-              <Card key={i}>
-                <CardHeader>
-                  <Skeleton className="h-6 w-48" />
-                  <Skeleton className="h-4 w-32 mt-2" />
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-6 gap-4">
-                    {Array.from({ length: 6 }).map((_, j) => (
-                      <Skeleton key={j} className="h-20" />
-                    ))}
+          <div className="space-y-3">
+            {loadingTasks ? (
+              Array.from({ length: 2 }).map((_, i) => (
+                <div key={i} className="rounded-2xl bg-white border border-slate-200/80 p-5">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-2">
+                      <Skeleton className="h-5 w-48" />
+                      <Skeleton className="h-4 w-32" />
+                    </div>
+                    <div className="flex gap-2">
+                      {Array.from({ length: 6 }).map((_, j) => (
+                        <Skeleton key={j} className="h-12 w-16 rounded-lg" />
+                      ))}
+                    </div>
+                    <Skeleton className="h-6 w-20 rounded-lg" />
                   </div>
-                </CardContent>
-              </Card>
-            ))
-          ) : (
-            tasks?.filter((task: Task) => {
-              // Hide the newest task when the live card is showing (avoids duplicate)
-              if (activeJobId && !jobDone && task.id === newestTaskId) return false;
-              return true;
-            }).map((task: Task) => {
-              return (
-                <Link key={task.id} to={`/task/${influencer.influencer_id}/${task.id}`}>
-                  <Card className="hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5 cursor-pointer">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div>
-                            <CardTitle className="text-xl mb-1">Run {task.id}</CardTitle>
-                            <CardDescription className="flex items-center gap-2">
-                              <Clock className="w-4 h-4" />
-                              {new Date(task.created_at).toLocaleString()}
-                            </CardDescription>
-                          </div>
+                </div>
+              ))
+            ) : (
+              tasks?.filter((task: Task) => {
+                // Hide the newest task when the live card is showing (avoids duplicate)
+                if (activeJobId && !jobDone && task.id === newestTaskId) return false;
+                return true;
+              }).map((task: Task) => {
+                return (
+                  <Link key={task.id} to={`/task/${influencer.influencer_id}/${task.id}`}>
+                    <div className="rounded-2xl bg-white border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-0.5 cursor-pointer p-5">
+                      <div className="flex items-center justify-between gap-4">
+                        {/* Left: run info */}
+                        <div className="flex-shrink-0">
+                          <p className="text-sm font-semibold text-slate-800">
+                            Run {task.id}
+                          </p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(task.created_at).toLocaleString()}
+                          </p>
                         </div>
-                        <Badge className={getStatusColor(task.status)}>
+
+                        {/* Center: stage pills */}
+                        <div className="flex items-center gap-1.5">
+                          {Object.entries(task.stages).map(([key, stage]) => {
+                            const pillColors = getStagePillColors(stage.status);
+                            return (
+                              <div
+                                key={key}
+                                className={`flex flex-col items-center text-center px-3 py-2 rounded-lg ${pillColors.bg} min-w-[4.5rem]`}
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${pillColors.dot} flex-shrink-0`} />
+                                  <span className={`text-[10px] font-medium leading-tight ${pillColors.text}`}>
+                                    {stageShortNames[key] ?? key}
+                                  </span>
+                                </div>
+                                {stage.items_count !== undefined && (
+                                  <span className={`text-base font-bold leading-tight mt-1 text-slate-800`}>
+                                    {stage.items_count}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Right: status badge */}
+                        <Badge className={`${getStatusColor(task.status)} border-0 text-xs`}>
                           {task.status}
                         </Badge>
                       </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                        {Object.entries(task.stages).map(([key, stage]) => {
-                          const Icon = stageIcons[key as keyof typeof stageIcons];
-                          return (
-                            <div key={key} className={`flex flex-col items-center text-center p-3 rounded-lg transition-all duration-500 ${
-                              stage.status === "completed" ? "bg-green-50" :
-                              stage.status === "in-progress" ? "bg-blue-50" :
-                              "bg-slate-50"
-                            }`}>
-                              <div className="flex items-center gap-2 mb-2 transition-all duration-300">
-                                {getStatusIcon(stage.status)}
-                                <Icon className={`w-4 h-4 transition-colors duration-300 ${
-                                  stage.status === "completed" ? "text-green-600" :
-                                  stage.status === "in-progress" ? "text-blue-600" :
-                                  "text-slate-600"
-                                }`} />
-                              </div>
-                              <div className="text-xs font-medium text-slate-700 mb-1">
-                                {stageTitles[key as keyof typeof stageTitles]}
-                              </div>
-                              <div className="text-lg font-bold transition-all duration-300" style={{ opacity: stage.items_count !== undefined ? 1 : 0 }}>
-                                <span className={stage.status === "completed" ? "text-green-600" : "text-purple-600"}>
-                                  {stage.items_count ?? "\u00A0"}
-                                </span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </Link>
-              );
-            })
-          )}
+                    </div>
+                  </Link>
+                );
+              })
+            )}
 
-          {!loadingTasks && (!tasks || tasks.length === 0) && (
-            <Card>
-              <CardContent className="py-12 text-center">
-                <Sparkles className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                <p className="text-slate-500">No generation tasks yet</p>
-                <p className="text-sm text-slate-400 mt-1">Start a pipeline to begin</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      </div>
+            {!loadingTasks && (!tasks || tasks.length === 0) && (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-white/50 py-12 text-center">
+                <Sparkles className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-sm text-slate-400">No generation tasks yet</p>
+                <p className="text-xs text-slate-300 mt-1">Start a pipeline to begin</p>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
@@ -739,67 +822,69 @@ function LiveTaskCard({ job, isDone }: { job: JobInfo; isDone: boolean }) {
   };
 
   return (
-    <Card className={`mb-4 transition-all duration-500 ${isDone ? "ring-2 ring-green-400 ring-opacity-50" : "ring-2 ring-blue-400 ring-opacity-50"}`}>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            {isDone ? (
-              <CheckCircle2 className="w-5 h-5 text-green-600" />
-            ) : (
-              <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
-            )}
-            <div>
-              <CardTitle className="text-xl mb-1">
-                {isDone ? "Pipeline Completed" : "Pipeline Running"}
-              </CardTitle>
-              <CardDescription className="flex items-center gap-2">
-                <Clock className="w-4 h-4" />
-                {isDone
-                  ? "Finished — loading results..."
-                  : progress?.current_stage
-                    ? `Stage: ${progress.current_stage}`
-                    : "Starting..."}
-              </CardDescription>
-            </div>
+    <div className={`rounded-2xl bg-white border shadow-sm mb-3 p-5 transition-all duration-500 ${
+      isDone
+        ? "border-green-300 ring-1 ring-green-200"
+        : "border-blue-300 ring-1 ring-blue-200"
+    }`}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          {isDone ? (
+            <CheckCircle2 className="w-5 h-5 text-green-600" />
+          ) : (
+            <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+          )}
+          <div>
+            <p className="text-sm font-semibold text-slate-800">
+              {isDone ? "Pipeline Completed" : "Pipeline Running"}
+            </p>
+            <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
+              <Clock className="w-3 h-3" />
+              {isDone
+                ? "Finished — loading results..."
+                : progress?.current_stage
+                  ? `Stage: ${progress.current_stage}`
+                  : "Starting..."}
+            </p>
           </div>
-          <Badge className={isDone ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"}>
-            {isDone ? "completed" : "in-progress"}
-          </Badge>
         </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          {Object.entries(stageData).map(([key, stage]) => {
-            const Icon = stageIcons[key as keyof typeof stageIcons];
-            const uiStatus = stage.status === "completed" ? "completed" :
-              stage.status === "running" ? "in-progress" : "pending";
-            return (
-              <div key={key} className={`flex flex-col items-center text-center p-3 rounded-lg transition-all duration-500 ${
-                uiStatus === "completed" ? "bg-green-50" :
-                uiStatus === "in-progress" ? "bg-blue-50" : "bg-slate-50"
-              }`}>
-                <div className="flex items-center gap-2 mb-2 transition-all duration-300">
-                  {getStatusIcon(uiStatus)}
-                  <Icon className={`w-4 h-4 transition-colors duration-300 ${
-                    uiStatus === "completed" ? "text-green-600" :
-                    uiStatus === "in-progress" ? "text-blue-600" :
-                    "text-slate-600"
-                  }`} />
-                </div>
-                <div className="text-xs font-medium text-slate-700 mb-1">
-                  {stageTitles[key as keyof typeof stageTitles]}
-                </div>
-                <div className="text-lg font-bold transition-all duration-300" style={{ opacity: stage.items !== undefined ? 1 : 0 }}>
-                  <span className={uiStatus === "completed" ? "text-green-600" : "text-purple-600"}>
-                    {stage.items ?? "\u00A0"}
-                  </span>
-                </div>
+        <Badge className={`${isDone ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"} border-0 text-xs`}>
+          {isDone ? "completed" : "in-progress"}
+        </Badge>
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        {Object.entries(stageData).map(([key, stage]) => {
+          const Icon = stageIcons[key as keyof typeof stageIcons];
+          const uiStatus = stage.status === "completed" ? "completed" :
+            stage.status === "running" ? "in-progress" : "pending";
+          const pillColors = getStagePillColors(uiStatus);
+          return (
+            <div
+              key={key}
+              className={`flex flex-col items-center text-center px-3 py-2 rounded-lg flex-1 transition-all duration-500 ${pillColors.bg}`}
+            >
+              <div className="flex items-center gap-1.5 mb-1">
+                {getStatusIcon(uiStatus)}
+                <Icon className={`w-3.5 h-3.5 transition-colors duration-300 ${
+                  uiStatus === "completed" ? "text-green-600" :
+                  uiStatus === "in-progress" ? "text-blue-600" :
+                  "text-slate-400"
+                }`} />
               </div>
-            );
-          })}
-        </div>
-      </CardContent>
-    </Card>
+              <span className={`text-[10px] font-medium ${pillColors.text}`}>
+                {stageShortNames[key] ?? key}
+              </span>
+              {stage.items !== undefined && (
+                <span className={`text-sm font-bold leading-tight ${pillColors.bold}`}>
+                  {stage.items}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
