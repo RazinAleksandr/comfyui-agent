@@ -3,8 +3,11 @@
 
 # Default source per platform (used by frontend and API when source not specified)
 default_sources:
-  tiktok: tiktok_custom
+  tiktok: scrapecreators
   instagram: apify
+
+# ScrapeCreators (TikTok keyword search — no browser required)
+scrapecreators_api_key: ${SCRAPECREATORS_API_KEY}
 
 # Apify (paid scraping API)
 apify_token: ${APIFY_TOKEN}

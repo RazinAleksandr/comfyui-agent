@@ -8,13 +8,14 @@ from pathlib import Path
 
 from trend_parser.adapters.apify import ApifyTrendAdapter
 from trend_parser.adapters.instagram import InstagramCustomAdapter
+from trend_parser.adapters.scrapecreators import ScrapeCreatorsTikTokAdapter
 from trend_parser.adapters.seed import SeedTrendAdapter
 from trend_parser.adapters.tiktok import TikTokCustomAdapter
 from trend_parser.adapters.types import RawTrendVideo, TrendFetchSelector
 from trend_parser.config import ParserConfig
 
 VALID_PLATFORMS = {"tiktok", "instagram"}
-VALID_SOURCES = {"seed", "apify", "tiktok_custom", "instagram_custom"}
+VALID_SOURCES = {"seed", "apify", "tiktok_custom", "instagram_custom", "scrapecreators"}
 
 STOPWORDS = {
     "the", "and", "for", "you", "with", "this", "that", "from", "your", "have",
@@ -165,6 +166,15 @@ class TrendIngestService:
                     )
                     return _select_top_videos(videos=videos, limit=limit, selector=selector)
                 raise RuntimeError(f"Apify fetch failed for platform={platform}: {exc}") from exc
+
+        if source == "scrapecreators":
+            if platform != "tiktok":
+                raise RuntimeError("source=scrapecreators supports only platform=tiktok.")
+            videos = ScrapeCreatorsTikTokAdapter(
+                query=self.config.tiktok_query,
+                api_key=self.config.scrapecreators_api_key,
+            ).fetch(limit=limit, selector=selector)
+            return _select_top_videos(videos=videos, limit=limit, selector=selector)
 
         if source == "tiktok_custom":
             if platform != "tiktok":

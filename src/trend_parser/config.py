@@ -14,7 +14,10 @@ GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 class ParserConfig:
     """Parser configuration loaded from YAML with ${ENV_VAR} interpolation."""
 
-    default_sources: dict = field(default_factory=lambda: {"tiktok": "tiktok_custom", "instagram": "apify"})
+    default_sources: dict = field(default_factory=lambda: {"tiktok": "scrapecreators", "instagram": "apify"})
+
+    # ScrapeCreators
+    scrapecreators_api_key: str = ""
 
     # Apify
     apify_token: str = ""

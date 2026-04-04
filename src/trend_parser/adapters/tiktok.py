@@ -16,7 +16,29 @@ except Exception:  # pragma: no cover - optional dependency
 logger = logging.getLogger(__name__)
 
 
+def _parse_proxy_url(proxy_url: str) -> dict:
+    """Parse a proxy URL like http://user:pass@host:port into a Playwright proxy dict."""
+    from urllib.parse import urlparse
+    p = urlparse(proxy_url)
+    result: dict = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        result["username"] = p.username
+    if p.password:
+        result["password"] = p.password
+    return result
+
+
 class TikTokCustomAdapter:
+    """TikTok adapter using the TikTokApi browser-based client.
+
+    Fetch strategy is selected based on the selector:
+      - search_terms present  → keyword search (/api/search/item/full/)
+      - hashtags only         → hashtag feed  (/api/challenge/item_list/)
+      - mode="trending"       → FYP recommend (/api/recommend/item_list/) + client-side filter
+      - mode="mixed"          → keyword search + hashtag feed, merged
+      - nothing provided      → FYP trending, unfiltered
+    """
+
     def __init__(
         self,
         query: str,
@@ -25,6 +47,7 @@ class TikTokCustomAdapter:
         session_count: int = 1,
         sleep_after: int = 3,
         browser: str = "chromium",
+        proxy_url: str | None = None,
     ):
         self.query = query
         self.ms_tokens_csv = ms_tokens_csv or ""
@@ -32,6 +55,7 @@ class TikTokCustomAdapter:
         self.session_count = max(1, int(session_count))
         self.sleep_after = max(1, int(sleep_after))
         self.browser = browser or "chromium"
+        self.proxy_url = proxy_url or None
 
     def fetch(self, limit: int, selector: TrendFetchSelector | None = None) -> list[RawTrendVideo]:
         if TikTokApi is None:
@@ -41,9 +65,8 @@ class TikTokCustomAdapter:
         try:
             return self._run_async(self._fetch_async(limit=limit, selector=selector))
         except RuntimeError as exc:
-            if "failed" not in str(exc).lower():
+            if "ms_token" not in str(exc).lower() and "failed" not in str(exc).lower():
                 raise
-            # All hashtags failed — try refreshing the msToken once
             logger.info("[tiktok_custom] fetch failed, attempting token refresh...")
             new_token = self._run_async(self._refresh_ms_token())
             if not new_token:
@@ -53,44 +76,108 @@ class TikTokCustomAdapter:
             return self._run_async(self._fetch_async(limit=limit, selector=selector))
 
     async def _fetch_async(self, limit: int, selector: TrendFetchSelector | None) -> list[RawTrendVideo]:
+        mode = (selector.mode or "auto").lower() if selector else "auto"
+        search_terms = [str(t).strip() for t in (selector.search_terms if selector else []) if str(t).strip()]
         hashtags = self._selector_hashtags(selector)
-        if not hashtags:
-            hashtags = self._fallback_hashtags(selector)
-        if not hashtags:
-            hashtags = ["healthylifestyle"]
 
         ms_tokens = self._ms_tokens()
-        per_tag_limit = max(1, (max(1, int(limit)) + len(hashtags) - 1) // len(hashtags))
-
-        unique: dict[str, RawTrendVideo] = {}
-        failures: list[str] = []
         async with TikTokApi() as api:
-            await api.create_sessions(
+            session_kwargs: dict = dict(
                 ms_tokens=ms_tokens,
                 num_sessions=self.session_count,
                 sleep_after=self.sleep_after,
                 browser=self.browser,
                 headless=self.headless,
             )
-            for tag in hashtags:
-                try:
-                    hashtag = api.hashtag(name=tag)
-                    async for video in hashtag.videos(count=per_tag_limit):
-                        row = self._to_video(video.as_dict)
-                        if row is None:
-                            continue
-                        if row.source_item_id and row.source_item_id in unique:
-                            continue
-                        if not self._passes_filters(row, selector):
-                            continue
-                        key = row.source_item_id or f"{tag}:{len(unique)}"
+            if self.proxy_url:
+                proxy = _parse_proxy_url(self.proxy_url)
+                session_kwargs["proxies"] = [proxy] * self.session_count
+            await api.create_sessions(**session_kwargs)
+
+            if mode == "trending":
+                return await self._fetch_trending(api, limit, selector)
+
+            if mode == "mixed":
+                return await self._fetch_mixed(api, limit, search_terms, hashtags, selector)
+
+            if mode == "search" or (mode == "auto" and search_terms):
+                results = await self._fetch_by_search(api, search_terms, limit, selector)
+                if results:
+                    return results
+                # Fall through to hashtags if search yielded nothing
+                logger.info("[tiktok_custom] keyword search empty, falling back to hashtags")
+
+            if hashtags:
+                return await self._fetch_by_hashtag(api, hashtags, limit, selector)
+
+            # No terms at all — use fallback query as search, then trending
+            fallback = self._build_fallback_query(selector)
+            if fallback:
+                results = await self._fetch_by_search(api, [fallback], limit, selector)
+                if results:
+                    return results
+
+            logger.info("[tiktok_custom] no search terms/hashtags, falling back to FYP trending")
+            return await self._fetch_trending(api, limit, selector)
+
+    # --- Fetch strategies ---
+
+    async def _fetch_by_search(
+        self,
+        api: Any,
+        terms: list[str],
+        limit: int,
+        selector: TrendFetchSelector | None,
+    ) -> list[RawTrendVideo]:
+        """Keyword search via /api/search/item/full/ — ranked by relevance/engagement."""
+        from TikTokApi.api.search import Search
+
+        unique: dict[str, RawTrendVideo] = {}
+        per_term_limit = max(1, (limit + len(terms) - 1) // len(terms))
+
+        for term in terms:
+            try:
+                async for video in Search.search_type(term, "item", count=per_term_limit):
+                    row = self._to_video(video.as_dict)
+                    if row is None or not self._passes_filters(row, selector):
+                        continue
+                    key = row.source_item_id or f"s:{term}:{len(unique)}"
+                    if key not in unique:
                         unique[key] = row
-                        if len(unique) >= limit:
-                            return list(unique.values())[:limit]
-                except Exception as exc:
-                    logger.warning("[tiktok_custom] hashtag '%s' failed: %s", tag, exc)
-                    failures.append(f"{tag}: {exc}")
-                    continue
+                    if len(unique) >= limit:
+                        return list(unique.values())[:limit]
+            except Exception as exc:
+                logger.warning("[tiktok_custom] search '%s' failed: %s", term, exc)
+
+        return list(unique.values())[:limit]
+
+    async def _fetch_by_hashtag(
+        self,
+        api: Any,
+        hashtags: list[str],
+        limit: int,
+        selector: TrendFetchSelector | None,
+    ) -> list[RawTrendVideo]:
+        """Hashtag feed via /api/challenge/item_list/ — chronological, niche-specific."""
+        unique: dict[str, RawTrendVideo] = {}
+        per_tag_limit = max(1, (limit + len(hashtags) - 1) // len(hashtags))
+        failures: list[str] = []
+
+        for tag in hashtags:
+            try:
+                async for video in api.hashtag(name=tag).videos(count=per_tag_limit):
+                    row = self._to_video(video.as_dict)
+                    if row is None or not self._passes_filters(row, selector):
+                        continue
+                    key = row.source_item_id or f"h:{tag}:{len(unique)}"
+                    if key not in unique:
+                        unique[key] = row
+                    if len(unique) >= limit:
+                        return list(unique.values())[:limit]
+            except Exception as exc:
+                logger.warning("[tiktok_custom] hashtag '%s' failed: %s", tag, exc)
+                failures.append(f"{tag}: {exc}")
+
         if not unique and failures:
             raise RuntimeError(
                 f"All {len(failures)} TikTok hashtag lookup(s) failed. "
@@ -98,6 +185,59 @@ class TikTokCustomAdapter:
                 f"Errors: {'; '.join(failures)}"
             )
         return list(unique.values())[:limit]
+
+    async def _fetch_trending(
+        self,
+        api: Any,
+        limit: int,
+        selector: TrendFetchSelector | None,
+    ) -> list[RawTrendVideo]:
+        """FYP recommendations via /api/recommend/item_list/ — filtered client-side."""
+        # TikTok's API silently fails with count > ~30; use 30 as the safe cap
+        fetch_count = min(limit, 30)
+        unique: dict[str, RawTrendVideo] = {}
+
+        try:
+            async for video in api.trending.videos(count=fetch_count):
+                row = self._to_video(video.as_dict)
+                if row is None or not self._passes_filters(row, selector):
+                    continue
+                key = row.source_item_id or f"t:{len(unique)}"
+                if key not in unique:
+                    unique[key] = row
+                if len(unique) >= limit:
+                    break
+        except Exception as exc:
+            logger.warning("[tiktok_custom] trending fetch failed: %s", exc)
+
+        return list(unique.values())[:limit]
+
+    async def _fetch_mixed(
+        self,
+        api: Any,
+        limit: int,
+        search_terms: list[str],
+        hashtags: list[str],
+        selector: TrendFetchSelector | None,
+    ) -> list[RawTrendVideo]:
+        """Merge keyword search + hashtag feed, deduplicated."""
+        half = max(1, limit // 2)
+        unique: dict[str, RawTrendVideo] = {}
+
+        if search_terms:
+            for row in await self._fetch_by_search(api, search_terms, half, selector):
+                key = row.source_item_id or f"s:{len(unique)}"
+                unique[key] = row
+
+        if hashtags:
+            for row in await self._fetch_by_hashtag(api, hashtags, half + (limit % 2), selector):
+                key = row.source_item_id or f"h:{len(unique)}"
+                if key not in unique:
+                    unique[key] = row
+
+        return list(unique.values())[:limit]
+
+    # --- Helpers ---
 
     def _to_video(self, data: dict[str, Any]) -> RawTrendVideo | None:
         source_id = str(data.get("id") or "").strip()
@@ -171,35 +311,23 @@ class TikTokCustomAdapter:
         seen: set[str] = set()
         for raw in selector.hashtags:
             tag = str(raw or "").strip().lstrip("#").lower()
-            if not tag or tag in seen:
-                continue
-            seen.add(tag)
-            out.append(tag)
+            if tag and tag not in seen:
+                seen.add(tag)
+                out.append(tag)
         return out
 
-    def _fallback_hashtags(self, selector: TrendFetchSelector | None) -> list[str]:
-        candidates: list[str] = []
+    def _build_fallback_query(self, selector: TrendFetchSelector | None) -> str | None:
+        """Build a single search query from search_terms, hashtags, or config query."""
         if selector:
-            candidates.extend(selector.search_terms)
-        if self.query:
-            candidates.append(self.query)
+            if selector.search_terms:
+                return selector.search_terms[0]
+            if selector.hashtags:
+                return selector.hashtags[0]
+        return self.query or None
 
-        out: list[str] = []
-        seen: set[str] = set()
-        for raw in candidates:
-            text = str(raw or "").strip().lower()
-            if not text:
-                continue
-            compact = "".join(ch for ch in text if ch.isalnum() or ch == "_")
-            if not compact or compact in seen:
-                continue
-            seen.add(compact)
-            out.append(compact)
-        return out[:3]
-
-    def _ms_tokens(self) -> list[str]:
+    def _ms_tokens(self) -> list[str] | None:
         tokens = [t.strip() for t in self.ms_tokens_csv.split(",") if t.strip()]
-        return tokens or [""]
+        return tokens or None  # None → TikTokApi handles session init itself
 
     @staticmethod
     async def _refresh_ms_token() -> str | None:
